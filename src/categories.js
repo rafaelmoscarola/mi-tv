@@ -2,6 +2,7 @@
 export const CATEGORIES = [
   'Lo más visto',
   'Noticias',
+  'Radios',
   'Deportes',
   'Música',
   'Folclore',

@@ -20,7 +20,12 @@ service cloud.firestore {
     // Catálogo de canales: lo lee cualquiera (también el radar); solo el administrador lo cambia
     match /catalog/{channelId} {
       allow read: if true;
-      allow write: if signedIn() && request.auth.token.email == 'TU_MAIL@gmail.com';
+      allow write: if signedIn() && request.auth.token.email == 'rafaelmoscarola@gmail.com';
+    }
+
+    // Configuración interna del administrador (por ejemplo, el catálogo sugerido)
+    match /config/{id} {
+      allow read, write: if signedIn() && request.auth.token.email == 'rafaelmoscarola@gmail.com';
     }
 
     // El "pizarrón" de cada tele

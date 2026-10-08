@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FB_API_KEY,
@@ -13,5 +13,10 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+// En Smart TV fuerza un modo de conexión más compatible; en el resto lo detecta solo
+const smartTv = /Tizen|Web0S|webOS|SmartTV|SMART-TV|BRAVIA|NetCast|HbbTV|AFT|CrKey|Android TV|GoogleTV|VIDAA/i.test(navigator.userAgent);
+export const db = initializeFirestore(
+  app,
+  smartTv ? { experimentalForceLongPolling: true } : { experimentalAutoDetectLongPolling: true }
+);
 export const googleProvider = new GoogleAuthProvider();

@@ -142,3 +142,9 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 19px; margin: 0; 
 .cat-text select { background: var(--ground); color: var(--muted); border: 1px solid var(--surface-2); border-radius: 8px; padding: 4px; font-size: 13px; }
 textarea.field { resize: vertical; font-family: var(--body); }
 select.field { appearance: auto; }
+
+.link-state { margin: 0; font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.link-state::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.link-state.ok::before { background: var(--ok); }
+.link-state.bad { color: var(--danger); }
+.link-state.bad::before { background: var(--danger); }

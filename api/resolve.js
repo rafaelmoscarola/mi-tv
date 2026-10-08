@@ -24,6 +24,11 @@ export default async function handler(req, res) {
       const j = await yt(`videos?part=snippet&id=${mVideo[1]}`);
       channelId = j.items?.[0]?.snippet?.channelId || null;
     }
+    // Si es un nombre (no un link), lo busca en YouTube. Cuesta más cuota: usar con moderación.
+    if (!channelId && !handle && q.length >= 3 && !/^https?:/.test(q)) {
+      const s = await yt(`search?part=snippet&type=channel&maxResults=1&regionCode=AR&relevanceLanguage=es&q=${encodeURIComponent(q)}`);
+      channelId = s.items?.[0]?.snippet?.channelId || s.items?.[0]?.id?.channelId || null;
+    }
     if (!channelId && !handle) return res.status(400).json({ error: 'No reconozco ese link' });
 
     const j = await yt(

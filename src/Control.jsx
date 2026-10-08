@@ -1,10 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
 import { parseYouTube } from './youtube';
 import { CATEGORIES } from './categories';
+import { SEED } from './seed';
 import { useRadar, buildRows, flatten, itemKey, viewersText, updatedText } from './radar';
+
+// Solo cambia lo que se muestra si el valor se mantiene un rato (evita parpadeos)
+function useSteady(value, ms) {
+  const [steady, setSteady] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSteady(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return steady;
+}
 
 const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || '').toLowerCase();
 
@@ -145,25 +156,56 @@ function Remote({ user, profile, screen }) {
   const rows = useMemo(() => buildRows(radar?.live), [radar]);
   const list = useMemo(() => flatten(rows), [rows]);
 
-  const write = (data) =>
-    updateDoc(screenRef, { ...data, updatedAt: serverTimestamp() }).catch(() => setMsg('No llegó a la tele. Revisá la conexión.'));
+  // Agrupa los toques rápidos: manda como máximo una orden cada 300 ms (la última gana)
+  const pendingRef = useRef({});
+  const timerRef = useRef(null);
+  const lastSentRef = useRef(0);
+  const [sentAt, setSentAt] = useState(0);
+  const [noAnswer, setNoAnswer] = useState(false);
+  const flush = () => {
+    timerRef.current = null;
+    const data = pendingRef.current;
+    pendingRef.current = {};
+    const reqAt = Date.now();
+    lastSentRef.current = reqAt;
+    setSentAt(reqAt);
+    setNoAnswer(false);
+    updateDoc(screenRef, { ...data, reqAt, updatedAt: serverTimestamp() }).catch(() => setMsg('No llegó a la tele. Revisá la conexión.'));
+  };
+  const write = (data) => {
+    pendingRef.current = { ...pendingRef.current, ...data };
+    if (timerRef.current) return;
+    const wait = Math.max(0, 300 - (Date.now() - lastSentRef.current));
+    timerRef.current = setTimeout(flush, wait);
+  };
   const cmd = (name) => write({ cmd: { name, at: Date.now() } });
+
+  // Si la tele no confirma en 5 segundos, avisa
+  const acked = !sentAt || screen?.ack >= sentAt;
+  useEffect(() => {
+    if (acked) return setNoAnswer(false);
+    const t = setTimeout(() => setNoAnswer(true), 5000);
+    return () => clearTimeout(t);
+  }, [acked, sentAt]);
 
   const play = (item) => {
     setMsg('');
+    localCursor.current = item;
     write({ mode: 'play', current: item, cursor: item });
   };
 
   // Zapping de vistazo: mueve el cursor y muestra la imagen del canal, sin cargar video
+  const localCursor = useRef(null);
   const zap = (dir) => {
     if (!list.length) return setMsg('Todavía no hay canales en vivo para recorrer.');
-    const from = itemKey(screen?.cursor || screen?.current);
+    const from = itemKey(localCursor.current || screen?.cursor || screen?.current);
     const i = list.findIndex((it) => itemKey(it) === from);
     const next = list[(i + dir + list.length) % list.length] || list[0];
+    localCursor.current = next;
     write({ mode: 'peek', cursor: next });
   };
   const ok = () => {
-    const it = screen?.cursor;
+    const it = localCursor.current || screen?.cursor;
     if (it) play(it);
   };
 
@@ -172,6 +214,17 @@ function Remote({ user, profile, screen }) {
     await updateDoc(screenRef, { ownerUid: null, mode: 'home', current: null, cursor: null }).catch(() => {});
     await setDoc(doc(db, 'users', user.uid), { screenId: null }, { merge: true });
   };
+
+  const soundNotice = useSteady(!!screen?.soundBlocked, 2500);
+  const troubleNotice = useSteady(screen?.trouble || '', 1500);
+  const rebooting = (screen?.recentBoots || 0) >= 3 && Date.now() - (screen?.bootAt || 0) < 5 * 60000;
+  const notice = rebooting
+    ? 'La tele se reinició varias veces en pocos minutos: su navegador se está quedando sin memoria. Probá cerrar y abrir el navegador de la tele.'
+    : troubleNotice === 'frozen'
+    ? 'La tele se está trabando con este video. Probá otro canal; si sigue, esta tele puede necesitar el modo "transmitir".'
+    : soundNotice
+    ? 'La tele está sin sonido: hacé un clic o apretá OK en el control de la tele (una sola vez).'
+    : '';
 
   const now = screen?.mode === 'play' ? screen?.current : null;
   const peeking = screen?.mode === 'peek' ? screen?.cursor : null;
@@ -189,13 +242,15 @@ function Remote({ user, profile, screen }) {
         </div>
       </section>
 
-      {screen?.soundBlocked && (
-        <p className="notice">La tele arrancó sin sonido: hacé un clic en la pantalla de la compu (solo una vez).</p>
-      )}
+      <p className={`link-state ${noAnswer ? 'bad' : acked ? 'ok' : ''}`} role="status">
+        {noAnswer ? 'La tele no responde. ¿Está prendida y con internet?' : acked ? 'Tele conectada' : 'Enviando…'}
+      </p>
+
+      {notice && <p className="notice">{notice}</p>}
 
       <section className="pad zap">
         <button className="btn" onClick={() => zap(-1)}>Canal −</button>
-        <button className="btn primary" onClick={ok} disabled={!peeking}>OK</button>
+        <button className="btn primary" onClick={ok}>OK</button>
         <button className="btn" onClick={() => zap(1)}>Canal +</button>
       </section>
       <section className="pad">
@@ -369,6 +424,8 @@ function Admin({ onPlay }) {
         </ul>
       )}
 
+      <Seed catalog={catalog} />
+
       <h2>Catálogo ({catalog.length})</h2>
       <ul className="catalog">
         {catalog.map((c) => (
@@ -400,5 +457,91 @@ function Admin({ onPlay }) {
       <input className="field" value={test} onChange={(e) => setTest(e.target.value)} placeholder="Link de un video o vivo" />
       <button className="btn" onClick={sendTest}>Ver en la tele</button>
     </section>
+  );
+}
+
+// Catálogo sugerido: busca de a 10 y vos confirmás cada uno antes de cargarlo
+function Seed({ catalog }) {
+  const [done, setDone] = useState(null);
+  const [found, setFound] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const configRef = doc(db, 'config', 'seed');
+
+  useEffect(() => onSnapshot(configRef, (s) => setDone(s.data()?.done || []), () => setDone([])), []);
+
+  const pending = done ? SEED.filter((e) => !done.includes(e.q) && !found.some((f) => f.entry.q === e.q)) : [];
+  const markDone = (q) => setDoc(configRef, { done: [...(done || []), q] }, { merge: true });
+
+  const searchNext = async () => {
+    setBusy(true);
+    const batch = pending.slice(0, 10);
+    const results = [];
+    for (const entry of batch) {
+      try {
+        const r = await fetch(`/api/resolve?q=${encodeURIComponent(entry.q)}`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || 'Error');
+        results.push({ entry, ch: j, already: catalog.some((c) => c.channelId === j.channelId) });
+      } catch (e) {
+        results.push({ entry, error: e.message });
+      }
+    }
+    setFound((f) => [...f, ...results]);
+    setBusy(false);
+  };
+
+  const accept = async (r) => {
+    await setDoc(doc(db, 'catalog', r.ch.channelId), {
+      channelId: r.ch.channelId,
+      name: r.ch.name,
+      handle: r.ch.handle,
+      logo: r.ch.logo,
+      category: r.entry.category,
+      priority: 0,
+      always: !!r.entry.always,
+      addedAt: serverTimestamp(),
+    });
+    await markDone(r.entry.q);
+    setFound((f) => f.filter((x) => x !== r));
+  };
+  const reject = async (r) => {
+    await markDone(r.entry.q);
+    setFound((f) => f.filter((x) => x !== r));
+  };
+
+  if (done === null) return null;
+  return (
+    <>
+      <h2>Catálogo sugerido</h2>
+      <p className="muted small">
+        {pending.length} canales por revisar. Se buscan de a 10; confirmá que cada uno sea el canal correcto antes de agregarlo.
+      </p>
+      {pending.length > 0 && (
+        <button className="btn" onClick={searchNext} disabled={busy}>
+          {busy ? 'Buscando…' : 'Buscar los siguientes 10'}
+        </button>
+      )}
+      <ul className="catalog">
+        {found.map((r, i) => (
+          <li key={i}>
+            {r.ch?.logo ? <img src={r.ch.logo} alt="" /> : <span className="thumb-ph round" />}
+            <span className="cat-text">
+              <strong>{r.ch ? r.ch.name : r.entry.q}</strong>
+              <small className="muted">
+                {r.error ? `No encontrado (${r.entry.q})` : `${r.entry.category}${r.entry.always ? ' · 24 h' : ''}${r.already ? ' · ya está' : ''} · buscado: ${r.entry.q}`}
+              </small>
+            </span>
+            {r.ch && !r.already && (
+              <button className="link" onClick={() => accept(r)}>
+                Agregar
+              </button>
+            )}
+            <button className="link" onClick={() => reject(r)}>
+              {r.ch && !r.already ? 'No' : 'Listo'}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

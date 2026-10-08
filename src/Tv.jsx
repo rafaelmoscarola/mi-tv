@@ -74,78 +74,192 @@ function Thumb({ item, big, stamp }) {
   if (!item) return <div className="thumb-ph" />;
   const src = item.kind === 'video' && big && !failed ? item.thumb.replace('hqdefault', 'maxresdefault') : item.thumb;
   return src ? (
-    <img src={`${src}${src.includes('?') ? '&' : '?'}t=${stamp || ''}`} alt="" onError={() => setFailed(true)} />
+    <img
+      src={`${src}${src.includes('?') ? '&' : '?'}t=${stamp || ''}`}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
   ) : (
     <div className="thumb-ph" />
   );
 }
 
-function Player({ item, volumeRef, onSoundBlocked, playerRef }) {
+// Detecta navegadores de Smart TV para usar una versión más liviana
+export const IS_SMART_TV = /Tizen|Web0S|webOS|SmartTV|SMART-TV|BRAVIA|NetCast|HbbTV|AFT|CrKey|Android TV|GoogleTV|VIDAA/i.test(
+  navigator.userAgent
+);
+
+// Espera a que el canal elegido "se asiente" antes de cargarlo (evita ahogar la tele con zapping rápido)
+function useSettled(value, key, ms) {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    if (!key) {
+      setSettled(null);
+      return;
+    }
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [key]);
+  if (!key) return null;
+  return settled || value;
+}
+
+// UN solo reproductor: se crea una vez y los cambios de canal reutilizan el mismo
+function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, playerRef }) {
   const hostRef = useRef(null);
+  const itemRef = useRef(item);
+  const readyRef = useRef(false);
+  const loadedRef = useRef('');
+  const checkSoundRef = useRef(null);
+  const jumpRef = useRef({ key: '', last: 0, tries: 0 });
+  itemRef.current = item;
 
   useEffect(() => {
     let cancelled = false;
     let checkTimer = null;
     let liveTimer = null;
+    const first = itemRef.current;
+
+    // Chequeo de sonido UNA vez por sesión:
+    // 'unknown' = todavía no sabemos, 'ok' = suena, 'blocked' = el navegador no deja sonido sin un clic
+    const checkSound = (p, attempt = 0) => {
+      clearTimeout(checkTimer);
+      const state = soundStateRef.current;
+      if (state === 'blocked') {
+        // ya sabemos que está bloqueado: arranca mudo directamente, sin volver a preguntar
+        try {
+          p.mute();
+          p.playVideo();
+        } catch {}
+        return;
+      }
+      if (state === 'ok') return;
+      checkTimer = setTimeout(() => {
+        const st = p.getPlayerState?.();
+        if (st === 1) {
+          soundStateRef.current = 'ok';
+          return;
+        }
+        // 3 = cargando: un Smart TV puede tardar, esperamos un poco más (hasta 2 veces)
+        if (st === 3 && attempt < 2) return checkSound(p, attempt + 1);
+        if (st === -1 || st === 2 || st === 5 || st === 3) {
+          soundStateRef.current = 'blocked';
+          try {
+            p.mute();
+            p.playVideo();
+          } catch {}
+          onSoundBlocked(true);
+        }
+      }, IS_SMART_TV ? 7000 : 3000);
+    };
+    checkSoundRef.current = checkSound;
+
     loadYouTubeApi().then((YT) => {
       if (cancelled || !hostRef.current) return;
       const target = document.createElement('div');
       hostRef.current.innerHTML = '';
       hostRef.current.appendChild(target);
-      const isChannel = item.kind === 'channel';
+      const isChannel = first.kind === 'channel';
+      loadedRef.current = `${first.kind}:${first.id}`;
       playerRef.current = new YT.Player(target, {
         width: '100%',
         height: '100%',
-        videoId: isChannel ? 'live_stream' : item.id,
+        videoId: isChannel ? 'live_stream' : first.id,
         playerVars: {
           autoplay: 1,
           playsinline: 1,
           rel: 0,
           origin: window.location.origin,
-          ...(isChannel ? { channel: item.id } : {}),
+          ...(isChannel ? { channel: first.id } : {}),
         },
         events: {
-          onStateChange: (e) => {
-            // Auto-vivo: si quedó atrasado respecto del vivo (por ejemplo después de un anuncio), salta al presente
-            if (e.data !== 1 || !item.live) return;
-            clearInterval(liveTimer);
-            const jump = () => {
-              try {
-                const d = e.target.getDuration();
-                const t = e.target.getCurrentTime();
-                if (d > 0 && d - t > 25) e.target.seekTo(d, true);
-              } catch {}
-            };
-            jump();
-            liveTimer = setInterval(jump, 30000);
-          },
           onReady: (e) => {
+            readyRef.current = true;
             e.target.setVolume(volumeRef.current);
             e.target.unMute();
             e.target.playVideo();
-            // Si a los 3 segundos no arrancó, el navegador bloqueó el sonido:
-            // arrancamos sin sonido y pedimos un solo clic.
-            checkTimer = setTimeout(() => {
-              const st = e.target.getPlayerState?.();
-              if (st !== 1 && st !== 3) {
-                e.target.mute();
-                e.target.playVideo();
-                onSoundBlocked(true);
-              }
-            }, 3000);
+            checkSound(e.target);
+            // Si mientras cargaba se eligió otro canal, lo carga ahora
+            const cur = itemRef.current;
+            const key = `${cur.kind}:${cur.id}`;
+            if (cur.kind === 'video' && key !== loadedRef.current) {
+              loadedRef.current = key;
+              e.target.loadVideoById(cur.id);
+            }
+          },
+          onStateChange: (e) => {
+            // Auto-vivo PRUDENTE: salta al presente solo si quedó muy atrasado,
+            // como mucho una vez por minuto, y si saltar no sirve, deja de intentarlo.
+            if (e.data !== 1 || !itemRef.current.live) return;
+            clearInterval(liveTimer);
+            const jump = () => {
+              try {
+                const now = Date.now();
+                const key = loadedRef.current;
+                const st = jumpRef.current;
+                if (st.key !== key) Object.assign(st, { key, last: 0, tries: 0 });
+                if (st.tries >= 2 || now - st.last < 60000) return;
+                const d = e.target.getDuration();
+                const t = e.target.getCurrentTime();
+                // d < 120: el vivo no permite volver atrás, no hace falta saltar
+                if (d > 120 && d - t > 45) {
+                  st.last = now;
+                  st.tries += 1;
+                  e.target.seekTo(d - 5, true);
+                }
+              } catch {}
+            };
+            jump();
+            liveTimer = setInterval(jump, 60000);
           },
         },
       });
     });
+    // Guardián anti-congelamiento: si dice "reproduciendo" o "cargando" pero la imagen no avanza, recarga
+    let lastT = -1;
+    let stuck = 0;
+    const watchdog = setInterval(() => {
+      const p = playerRef.current;
+      if (!p || !readyRef.current) return;
+      try {
+        const st = p.getPlayerState?.();
+        const t = p.getCurrentTime?.() || 0;
+        if ((st === 1 || st === 3) && Math.abs(t - lastT) < 0.5) stuck += 1;
+        else stuck = 0;
+        lastT = t;
+        if (stuck >= 2) {
+          stuck = 0;
+          lastT = -1;
+          onFrozen();
+        }
+      } catch {}
+    }, 10000);
+
     return () => {
       cancelled = true;
       clearTimeout(checkTimer);
       clearInterval(liveTimer);
+      clearInterval(watchdog);
+      readyRef.current = false;
       try {
         playerRef.current?.destroy?.();
       } catch {}
       playerRef.current = null;
     };
+  }, []);
+
+  // Cambio de canal: carga el video nuevo en el MISMO reproductor, sin recrearlo
+  useEffect(() => {
+    const key = `${item.kind}:${item.id}`;
+    const p = playerRef.current;
+    if (!readyRef.current || !p || key === loadedRef.current || item.kind !== 'video') return;
+    loadedRef.current = key;
+    try {
+      p.loadVideoById(item.id);
+      checkSoundRef.current?.(p);
+    } catch {}
   }, [item.kind, item.id]);
 
   return <div ref={hostRef} className="tv-player" />;
@@ -158,18 +272,22 @@ export default function Tv() {
   const [showTitle, setShowTitle] = useState(false);
   const [pairError, setPairError] = useState('');
   const [soundBlocked, setSoundBlocked] = useState(false);
+  const soundStateRef = useRef('unknown');
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const freezesRef = useRef([]);
+  const [trouble, setTrouble] = useState('');
   const playerRef = useRef(null);
   const volumeRef = useRef(70);
   const clock = useClock();
   const { canInstall, install } = useInstallPrompt();
   const paired = !!screen?.ownerUid;
-  const { data: radar, error: radarError } = useRadar(paired);
+  const { data: radar, error: radarError } = useRadar(paired && !(IS_SMART_TV && screen?.mode === 'play'));
   const rows = buildRows(radar?.live);
   const stamp = radar?.updatedAt;
   const cursorKey = itemKey(screen?.cursor);
   const selectedRef = useRef(null);
   useEffect(() => {
-    selectedRef.current?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+    selectedRef.current?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: IS_SMART_TV ? 'auto' : 'smooth' });
   }, [cursorKey, screen?.mode]);
 
   // La tele entra sola, sin cuenta de Google (sesión anónima que queda guardada en este navegador)
@@ -241,13 +359,58 @@ export default function Tv() {
     updateDoc(doc(db, 'screens', uid), { pairCode: null, pairExpires: null }).catch(console.error);
   }, [uid, screen?.ownerUid, screen?.pairCode]);
 
-  // Avisa al celu si la tele necesita un clic para el sonido
+  // Avisa al celu si la tele necesita un clic para el sonido o si tiene problemas.
+  // Solo escribe cuando el valor de la tele CAMBIA (nunca en respuesta a lo que llega), así no hay ida y vuelta.
+  const syncedRef = useRef({});
   useEffect(() => {
-    if (!uid || screen === undefined || !screen?.ownerUid) return;
-    if (!!screen.soundBlocked !== soundBlocked) {
-      updateDoc(doc(db, 'screens', uid), { soundBlocked }).catch(() => {});
-    }
-  }, [uid, soundBlocked, screen?.ownerUid, screen?.soundBlocked]);
+    if (!uid || !screen?.ownerUid) return;
+    const data = { soundBlocked, trouble };
+    if (syncedRef.current.soundBlocked === soundBlocked && syncedRef.current.trouble === trouble) return;
+    syncedRef.current = data;
+    updateDoc(doc(db, 'screens', uid), data).catch(() => {});
+  }, [uid, screen?.ownerUid, soundBlocked, trouble]);
+
+  // Detector de reinicios: si el navegador de la tele recarga la página solo (falta de memoria), lo cuenta
+  useEffect(() => {
+    if (!uid) return;
+    let boots = [];
+    try {
+      boots = JSON.parse(sessionStorage.getItem('mitv-boots') || '[]');
+    } catch {}
+    const now = Date.now();
+    boots = [...boots.filter((t) => now - t < 5 * 60000), now];
+    try {
+      sessionStorage.setItem('mitv-boots', JSON.stringify(boots));
+    } catch {}
+    updateDoc(doc(db, 'screens', uid), { bootAt: now, recentBoots: boots.length }).catch(() => {});
+  }, [uid]);
+
+  // Si el video se congela: lo recarga; si pasa 3 veces en 5 minutos, avisa al celu
+  const handleFrozen = () => {
+    const now = Date.now();
+    freezesRef.current = [...freezesRef.current.filter((t) => now - t < 5 * 60000), now];
+    if (freezesRef.current.length >= 3) setTrouble('frozen');
+    setReloadNonce((n) => n + 1);
+  };
+
+  // Pantalla completa: el primer clic o tecla en la tele la pone como un televisor (F11)
+  const [isFull, setIsFull] = useState(() => !!document.fullscreenElement || window.innerHeight >= window.screen.height - 2);
+  useEffect(() => {
+    const onChange = () => setIsFull(!!document.fullscreenElement || window.innerHeight >= window.screen.height - 2);
+    const goFull = () => {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    window.addEventListener('resize', onChange);
+    window.addEventListener('pointerdown', goFull);
+    window.addEventListener('keydown', goFull);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      window.removeEventListener('resize', onChange);
+      window.removeEventListener('pointerdown', goFull);
+      window.removeEventListener('keydown', goFull);
+    };
+  }, []);
 
   // Un solo clic o tecla en la tele habilita el sonido para toda la sesión
   useEffect(() => {
@@ -258,6 +421,7 @@ export default function Tv() {
         playerRef.current?.setVolume(volumeRef.current);
         playerRef.current?.playVideo();
       } catch {}
+      soundStateRef.current = 'ok';
       setSoundBlocked(false);
     };
     window.addEventListener('pointerdown', enable);
@@ -268,9 +432,22 @@ export default function Tv() {
     };
   }, [soundBlocked]);
 
+  // Confirmación: la tele avisa al celu que recibió la última orden
+  useEffect(() => {
+    if (!uid || !screen?.reqAt || screen.ack === screen.reqAt) return;
+    updateDoc(doc(db, 'screens', uid), { ack: screen.reqAt }).catch(() => {});
+  }, [uid, screen?.reqAt]);
+
   // Muestra el nombre del canal unos segundos cada vez que cambia
   const current = screen?.mode === 'play' ? screen?.current : null;
   const currentKey = current && (current.kind === 'video' || current.kind === 'channel') ? `${current.kind}:${current.id}` : null;
+  const playing = useSettled(current, currentKey, IS_SMART_TV ? 600 : 300);
+  // Los videos comparten un reproductor; los vivos "24 h" por canal necesitan uno propio
+  const playerKey = playing ? `${playing.kind === 'channel' ? `ch:${playing.id}` : 'video-player'}:${reloadNonce}` : null;
+  useEffect(() => {
+    freezesRef.current = [];
+    setTrouble('');
+  }, [currentKey]);
   useEffect(() => {
     if (!currentKey) return;
     setShowTitle(true);
@@ -337,7 +514,17 @@ export default function Tv() {
   if (currentKey) {
     return (
       <main className="tv tv-play">
-        <Player key={currentKey} item={current} volumeRef={volumeRef} playerRef={playerRef} onSoundBlocked={setSoundBlocked} />
+        {playing && (
+          <Player
+            key={playerKey}
+            item={playing}
+            volumeRef={volumeRef}
+            playerRef={playerRef}
+            soundStateRef={soundStateRef}
+            onSoundBlocked={setSoundBlocked}
+            onFrozen={handleFrozen}
+          />
+        )}
         <div className={`tv-toast ${showTitle ? 'is-on' : ''}`}>
           <span className="live-dot" />
           {current.title || 'En vivo'}
@@ -384,6 +571,7 @@ export default function Tv() {
           <span className="tv-status">
             <span className="ok-dot" /> Control conectado
           </span>
+          {!isFull && <span className="tv-updated">Hacé un clic para pantalla completa</span>}
           {radar && <span className="tv-updated">{updatedText(radar.updatedAt)}</span>}
           <span className="home-clock">{clock}</span>
         </div>
@@ -392,7 +580,7 @@ export default function Tv() {
       {hero ? (
         <section className="home-hero">
           <div className="hero-img">
-            <Thumb item={hero} big stamp={stamp} />
+            <Thumb item={hero} big={!IS_SMART_TV} stamp={stamp} />
           </div>
           <div className="hero-info">
             <div className="peek-channel">
@@ -421,13 +609,13 @@ export default function Tv() {
           <section key={row.title} className="home-row">
             <h2>{row.title}</h2>
             <div className="row-cards">
-              {row.items.map((it) => {
+              {(IS_SMART_TV ? row.items.slice(0, 12) : row.items).map((it) => {
                 const k = itemKey(it);
                 const sel = k === cursorKey;
                 return (
                   <article key={k} ref={sel ? selectedRef : null} className={`tv-card ${sel ? 'is-sel' : ''}`}>
                     <div className="card-img">
-                      <Thumb item={it} stamp={stamp} />
+                      <Thumb item={it} stamp={IS_SMART_TV ? '' : stamp} />
                       <span className="live-pill small">En vivo</span>
                     </div>
                     <strong>{it.channel}</strong>
