@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebase';
+import { useRadar, buildRows, itemKey, sinceText, viewersText, updatedText } from './radar';
 
 const CODE_TTL = 10 * 60 * 1000; // el código de emparejar dura 10 minutos
 
@@ -67,12 +68,25 @@ function useInstallPrompt() {
   return { canInstall: !!promptEvent && !installed, install };
 }
 
+// Imagen en vivo: intenta la versión grande y si no existe usa la normal
+function Thumb({ item, big, stamp }) {
+  const [failed, setFailed] = useState(false);
+  if (!item) return <div className="thumb-ph" />;
+  const src = item.kind === 'video' && big && !failed ? item.thumb.replace('hqdefault', 'maxresdefault') : item.thumb;
+  return src ? (
+    <img src={`${src}${src.includes('?') ? '&' : '?'}t=${stamp || ''}`} alt="" onError={() => setFailed(true)} />
+  ) : (
+    <div className="thumb-ph" />
+  );
+}
+
 function Player({ item, volumeRef, onSoundBlocked, playerRef }) {
   const hostRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
     let checkTimer = null;
+    let liveTimer = null;
     loadYouTubeApi().then((YT) => {
       if (cancelled || !hostRef.current) return;
       const target = document.createElement('div');
@@ -91,6 +105,20 @@ function Player({ item, volumeRef, onSoundBlocked, playerRef }) {
           ...(isChannel ? { channel: item.id } : {}),
         },
         events: {
+          onStateChange: (e) => {
+            // Auto-vivo: si quedó atrasado respecto del vivo (por ejemplo después de un anuncio), salta al presente
+            if (e.data !== 1 || !item.live) return;
+            clearInterval(liveTimer);
+            const jump = () => {
+              try {
+                const d = e.target.getDuration();
+                const t = e.target.getCurrentTime();
+                if (d > 0 && d - t > 25) e.target.seekTo(d, true);
+              } catch {}
+            };
+            jump();
+            liveTimer = setInterval(jump, 30000);
+          },
           onReady: (e) => {
             e.target.setVolume(volumeRef.current);
             e.target.unMute();
@@ -112,6 +140,7 @@ function Player({ item, volumeRef, onSoundBlocked, playerRef }) {
     return () => {
       cancelled = true;
       clearTimeout(checkTimer);
+      clearInterval(liveTimer);
       try {
         playerRef.current?.destroy?.();
       } catch {}
@@ -133,6 +162,15 @@ export default function Tv() {
   const volumeRef = useRef(70);
   const clock = useClock();
   const { canInstall, install } = useInstallPrompt();
+  const paired = !!screen?.ownerUid;
+  const { data: radar, error: radarError } = useRadar(paired);
+  const rows = buildRows(radar?.live);
+  const stamp = radar?.updatedAt;
+  const cursorKey = itemKey(screen?.cursor);
+  const selectedRef = useRef(null);
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [cursorKey, screen?.mode]);
 
   // La tele entra sola, sin cuenta de Google (sesión anónima que queda guardada en este navegador)
   useEffect(
@@ -314,13 +352,93 @@ export default function Tv() {
     );
   }
 
+  // VISTAZO: la imagen del canal a pantalla grande, sin cargar video ni anuncios
+  if (screen.mode === 'peek' && screen.cursor) {
+    const it = screen.cursor;
+    return (
+      <main className="tv tv-peek">
+        <Thumb item={it} big stamp={stamp} />
+        <div className="peek-info">
+          <div className="peek-channel">
+            {it.logo && <img src={it.logo} alt="" />}
+            <span>{it.channel}</span>
+            <span className="live-pill">En vivo</span>
+          </div>
+          <h1>{it.title}</h1>
+          <p>{[viewersText(it.viewers), sinceText(it.startedAt)].filter(Boolean).join('   ')}</p>
+          <p className="peek-hint">OK en el celular para ver</p>
+        </div>
+      </main>
+    );
+  }
+
+  // INICIO: la grilla con todo lo que está en vivo
+  const hero = screen.cursor || rows[0]?.items[0] || null;
   return (
-    <main className="tv tv-center">
-      <div className="tv-clock">{clock}</div>
-      <p className="tv-lead">Elegí qué ver desde tu celular</p>
-      <p className="tv-status">
-        <span className="ok-dot" /> Control conectado
-      </p>
+    <main className="tv tv-home">
+      <header className="home-head">
+        <div className="tv-logo small">
+          Mi<span>TV</span>
+        </div>
+        <div className="home-meta">
+          <span className="tv-status">
+            <span className="ok-dot" /> Control conectado
+          </span>
+          {radar && <span className="tv-updated">{updatedText(radar.updatedAt)}</span>}
+          <span className="home-clock">{clock}</span>
+        </div>
+      </header>
+
+      {hero ? (
+        <section className="home-hero">
+          <div className="hero-img">
+            <Thumb item={hero} big stamp={stamp} />
+          </div>
+          <div className="hero-info">
+            <div className="peek-channel">
+              {hero.logo && <img src={hero.logo} alt="" />}
+              <span>{hero.channel}</span>
+              <span className="live-pill">En vivo</span>
+            </div>
+            <h1>{hero.title}</h1>
+            <p>{[viewersText(hero.viewers), sinceText(hero.startedAt)].filter(Boolean).join('   ')}</p>
+          </div>
+        </section>
+      ) : (
+        <section className="home-empty">
+          {radarError ? (
+            <p className="tv-error">El radar no respondió: {radarError}</p>
+          ) : radar ? (
+            <p className="tv-lead">Ahora no hay nada en vivo en tu catálogo. Agregá canales desde el celular.</p>
+          ) : (
+            <p className="tv-muted">Buscando qué está en vivo…</p>
+          )}
+        </section>
+      )}
+
+      <div className="home-rows">
+        {rows.map((row) => (
+          <section key={row.title} className="home-row">
+            <h2>{row.title}</h2>
+            <div className="row-cards">
+              {row.items.map((it) => {
+                const k = itemKey(it);
+                const sel = k === cursorKey;
+                return (
+                  <article key={k} ref={sel ? selectedRef : null} className={`tv-card ${sel ? 'is-sel' : ''}`}>
+                    <div className="card-img">
+                      <Thumb item={it} stamp={stamp} />
+                      <span className="live-pill small">En vivo</span>
+                    </div>
+                    <strong>{it.channel}</strong>
+                    <span>{it.title}</span>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
       {installButton}
     </main>
   );
