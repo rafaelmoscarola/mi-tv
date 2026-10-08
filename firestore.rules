@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+
+    // Perfil de cada usuario (por ahora: qué tele tiene emparejada y sus recientes)
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Códigos de 4 números que muestra la tele para emparejar
+    match /pairCodes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && request.resource.data.screenId == request.auth.uid;
+      allow update: if signedIn() && request.resource.data.screenId == request.auth.uid
+                    && resource.data.expires < request.time.toMillis();
+      allow delete: if signedIn() && resource.data.screenId == request.auth.uid;
+    }
+
+    // El "pizarrón" de cada tele
+    match /screens/{screenId} {
+      function isTv() { return signedIn() && request.auth.uid == screenId; }
+      function isOwner() { return signedIn() && resource.data.get('ownerUid', null) == request.auth.uid; }
+
+      allow read: if isTv() || isOwner();
+      allow create: if isTv() && !('ownerUid' in request.resource.data);
+      allow update: if
+        (isTv() && (request.resource.data.get('ownerUid', null) == resource.data.get('ownerUid', null)
+                    || request.resource.data.get('ownerUid', null) == null))
+        || (isOwner() && (request.resource.data.get('ownerUid', null) == resource.data.get('ownerUid', null)
+                          || request.resource.data.get('ownerUid', null) == null))
+        || (signedIn()
+            && resource.data.get('ownerUid', null) == null
+            && resource.data.get('pairCode', null) != null
+            && request.resource.data.get('claimCode', null) == resource.data.pairCode
+            && resource.data.pairExpires > request.time.toMillis()
+            && request.resource.data.ownerUid == request.auth.uid);
+    }
+  }
+}
