@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { arrayUnion, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
 import { parseYouTube, embedUrl } from './youtube';
 import { CATEGORIES } from './categories';
 import { SEED } from './seed';
-import { useRadar, buildRows, flatten, itemKey, viewersText, updatedText } from './radar';
+import { useRadar, itemKey, viewersText, updatedText } from './radar';
+import { personalRows, zapList, logMinute, addRecent } from './personal';
 
 // Solo cambia lo que se muestra si el valor se mantiene un rato (evita parpadeos)
 function useSteady(value, ms) {
@@ -152,7 +153,7 @@ function Pair({ user, lost, onClose }) {
 }
 
 // Reproductor del celu
-function PhonePlayer({ item, flying, onToTv, canTv, onClose }) {
+function PhonePlayer({ item, flying, onToTv, canTv, onClose, isFav, onFav }) {
   const src = embedUrl(item);
   return (
     <section className={`phone-player ${flying}`}>
@@ -162,6 +163,11 @@ function PhonePlayer({ item, flying, onToTv, canTv, onClose }) {
           <strong>{item.channel}</strong>
           <span>{item.title}</span>
         </div>
+        {item.channelId && (
+          <button className={`star inline ${isFav ? 'is-fav' : ''}`} onClick={onFav} aria-label={isFav ? 'Quitar de favoritos' : 'Agregar a favoritos'}>
+            {isFav ? '★' : '☆'}
+          </button>
+        )}
         <button className="btn primary to-tv" onClick={onToTv}>
           {canTv ? 'Ver en la tele' : 'Conectar tele'}
         </button>
@@ -174,22 +180,61 @@ function PhonePlayer({ item, flying, onToTv, canTv, onClose }) {
 }
 
 // Fila estilo Netflix: se desliza de costado
-function Row({ title, items, onPick, activeKey }) {
+function Row({ title, items, onPick, activeKey, favorites, onFav }) {
   return (
     <section className="nrow">
       <h2>{title}</h2>
       <div className="nrow-cards">
-        {items.map((it) => (
-          <button key={itemKey(it)} className={`ncard ${itemKey(it) === activeKey ? 'is-on' : ''}`} onClick={() => onPick(it)}>
-            <span className="ncard-img">
-              {it.thumb ? <img src={it.thumb} alt="" loading="lazy" /> : <span className="thumb-ph" />}
-              <span className="live-pill tiny">En vivo</span>
-            </span>
-            <strong>{it.channel}</strong>
-            <small>{it.title}</small>
+        {items.map((it) => {
+          const fav = favorites.includes(it.channelId);
+          return (
+            <div key={itemKey(it)} className={`ncard ${itemKey(it) === activeKey ? 'is-on' : ''} ${it.offline ? 'is-off' : ''}`}>
+              <button className="ncard-main" onClick={() => !it.offline && onPick(it)} disabled={it.offline}>
+                <span className="ncard-img">
+                  {it.thumb ? <img src={it.thumb} alt="" loading="lazy" /> : <span className="thumb-ph" />}
+                  {!it.offline && <span className="live-pill tiny">En vivo</span>}
+                </span>
+                <strong>{it.channel}</strong>
+                <small>{it.offline ? 'No está en vivo ahora' : it.title}</small>
+              </button>
+              {it.channelId && (
+                <button
+                  className={`star ${fav ? 'is-fav' : ''}`}
+                  onClick={() => onFav(it.channelId, !fav)}
+                  aria-label={fav ? `Quitar ${it.channel} de favoritos` : `Agregar ${it.channel} a favoritos`}
+                >
+                  {fav ? '★' : '☆'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// Elegir categorías (primer ingreso o "Editar")
+function CategoryPicker({ initial, onSave, onSkip }) {
+  const [sel, setSel] = useState(initial || []);
+  const toggle = (c) => setSel((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c]));
+  return (
+    <section className="card">
+      <h2>¿Qué te gusta ver?</h2>
+      <p className="muted small">Elegí tus categorías. Solo vas a ver esas (más "Lo más visto"), y siempre podés tocar "Todas las categorías".</p>
+      <div className="cat-chips">
+        {CATEGORIES.filter((c) => c !== 'Lo más visto').map((c) => (
+          <button key={c} className={`cat-chip ${sel.includes(c) ? 'is-on' : ''}`} onClick={() => toggle(c)}>
+            {c}
           </button>
         ))}
       </div>
+      <button className="btn primary" onClick={() => onSave(sel)}>
+        Guardar {sel.length ? `(${sel.length})` : ''}
+      </button>
+      <button className="link" onClick={onSkip}>
+        Prefiero ver todas
+      </button>
     </section>
   );
 }
@@ -202,8 +247,18 @@ function Home({ user, profile, screen, screenLost }) {
   const [flying, setFlying] = useState(''); // animación: 'fly-up' (a la tele) o 'fly-in' (al celu)
   const isAdmin = !!ADMIN_EMAIL && (user.email || '').toLowerCase() === ADMIN_EMAIL;
   const { data: radar, error: radarError } = useRadar(true);
-  const rows = useMemo(() => buildRows(radar?.live), [radar]);
-  const list = useMemo(() => flatten(rows), [rows]);
+  const [showAll, setShowAll] = useState(false);
+  const [editingCats, setEditingCats] = useState(false);
+  const rows = useMemo(() => personalRows(radar?.live, profile, showAll), [radar, profile, showAll]);
+  const list = useMemo(() => zapList(rows), [rows]);
+  const favorites = profile.favorites || [];
+  const userRef = doc(db, 'users', user.uid);
+  const setFav = (channelId, on) => updateDoc(userRef, { favorites: on ? arrayUnion(channelId) : arrayRemove(channelId) }).catch(() => {});
+  const saveCats = (cats) => {
+    setDoc(userRef, { categories: cats }, { merge: true });
+    setEditingCats(false);
+  };
+  const needsCats = profile.categories === undefined;
   const paired = !!profile.screenId && !!screen;
   const screenRef = profile.screenId ? doc(db, 'screens', profile.screenId) : null;
   const tvActive = paired && !phoneItem && (screen?.mode === 'play' || screen?.mode === 'peek');
@@ -254,6 +309,23 @@ function Home({ user, profile, screen, screenLost }) {
     : '';
 
   const localCursor = useRef(null);
+
+  const phoneId = phoneItem?.channelId || '';
+  useEffect(() => {
+    if (!phoneItem?.channelId) return;
+    addRecent(db, user.uid, profile, phoneItem);
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') logMinute(db, user.uid, phoneItem);
+    }, 60000);
+    return () => clearInterval(t);
+  }, [phoneId]);
+
+  // La tele muestra las mismas categorías que el celu
+  const toggleAll = () => {
+    const v = !showAll;
+    setShowAll(v);
+    if (paired) write({ showAll: v });
+  };
 
   // Tocar un canal: se ve donde estás mirando (si la tele está activa, en la tele; si no, en el celu)
   const pick = (item) => {
@@ -322,7 +394,15 @@ function Home({ user, profile, screen, screenLost }) {
       {(pairing || screenLost) && <Pair user={user} lost={screenLost} onClose={() => setPairing(false)} />}
 
       {phoneItem && (
-        <PhonePlayer item={phoneItem} flying={flying} canTv={paired} onToTv={toTv} onClose={() => setPhoneItem(null)} />
+        <PhonePlayer
+          item={phoneItem}
+          flying={flying}
+          canTv={paired}
+          onToTv={toTv}
+          onClose={() => setPhoneItem(null)}
+          isFav={favorites.includes(phoneItem.channelId)}
+          onFav={() => setFav(phoneItem.channelId, !favorites.includes(phoneItem.channelId))}
+        />
       )}
 
       {tvActive && (
@@ -334,6 +414,15 @@ function Home({ user, profile, screen, screenLost }) {
               <strong>{onTv?.channel || 'Mi TV'}</strong>
               {onTv?.title && <span className="now-title">{onTv.title}</span>}
             </div>
+            {onTv?.channelId && (
+              <button
+                className={`star inline ${favorites.includes(onTv.channelId) ? 'is-fav' : ''}`}
+                onClick={() => setFav(onTv.channelId, !favorites.includes(onTv.channelId))}
+                aria-label="Favorito"
+              >
+                {favorites.includes(onTv.channelId) ? '★' : '☆'}
+              </button>
+            )}
           </div>
           {notice && <p className="notice">{notice}</p>}
           <section className="pad zap">
@@ -369,8 +458,20 @@ function Home({ user, profile, screen, screenLost }) {
         )}
       </nav>
 
-      {tab === 'vivo' && (
+      {tab === 'vivo' && (needsCats || editingCats) && (
+        <CategoryPicker initial={profile.categories} onSave={saveCats} onSkip={() => saveCats([])} />
+      )}
+
+      {tab === 'vivo' && !needsCats && !editingCats && (
         <section className="live-rows">
+          <div className="cats-bar">
+            <button className={`all-btn ${showAll ? 'is-on' : ''}`} onClick={toggleAll}>
+              {showAll ? 'Solo mis categorías' : 'Todas las categorías'}
+            </button>
+            <button className="link" onClick={() => setEditingCats(true)}>
+              Mis categorías
+            </button>
+          </div>
           {radarError && <p className="error">El radar no respondió: {radarError}</p>}
           {!radar && !radarError && <p className="muted">Buscando qué está en vivo…</p>}
           {radar && !rows.length && (
@@ -384,6 +485,8 @@ function Home({ user, profile, screen, screenLost }) {
               items={row.items}
               onPick={pick}
               activeKey={itemKey(phoneItem || onTv)}
+              favorites={favorites}
+              onFav={setFav}
             />
           ))}
         </section>

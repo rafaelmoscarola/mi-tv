@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { useRadar, buildRows, itemKey, sinceText, viewersText, updatedText } from './radar';
+import { useRadar, itemKey, sinceText, viewersText, updatedText } from './radar';
+import { personalRows, logMinute, addRecent } from './personal';
 
 const CODE_TTL = 10 * 60 * 1000; // el código de emparejar dura 10 minutos
 
@@ -298,7 +299,18 @@ export default function Tv() {
   const { canInstall, install } = useInstallPrompt();
   const paired = !!screen?.ownerUid;
   const { data: radar, error: radarError } = useRadar(paired && !(IS_SMART_TV && screen?.mode === 'play'));
-  const rows = buildRows(radar?.live);
+  // Preferencias del dueño de esta tele (favoritos, categorías, lo que mira)
+  const ownerUid = screen?.ownerUid || null;
+  const [prefs, setPrefs] = useState(null);
+  useEffect(() => {
+    if (!ownerUid) return setPrefs(null);
+    return onSnapshot(
+      doc(db, 'users', ownerUid),
+      (s) => setPrefs(s.data() || {}),
+      () => setPrefs(null)
+    );
+  }, [ownerUid]);
+  const rows = personalRows(radar?.live, prefs, !!screen?.showAll);
   const stamp = radar?.updatedAt;
   const cursorKey = itemKey(screen?.cursor);
   const selectedRef = useRef(null);
@@ -464,6 +476,20 @@ export default function Tv() {
     freezesRef.current = [];
     setTrouble('');
   }, [currentKey]);
+
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const playingId = playing?.channelId || '';
+  useEffect(() => {
+    if (!ownerUid || !playing?.channelId) return;
+    addRecent(db, ownerUid, prefsRef.current, playing);
+    const t = setInterval(() => {
+      try {
+        if (playerRef.current?.getPlayerState?.() === 1) logMinute(db, ownerUid, playing);
+      } catch {}
+    }, 60000);
+    return () => clearInterval(t);
+  }, [ownerUid, playingId]);
   useEffect(() => {
     if (!currentKey) return;
     setShowTitle(true);
@@ -591,7 +617,7 @@ export default function Tv() {
   }
 
   // INICIO: la grilla con todo lo que está en vivo
-  const hero = screen.cursor || rows[0]?.items[0] || null;
+  const hero = screen.cursor || rows.flatMap((r) => r.items).find((i) => !i.offline) || null;
   return (
     <main className="tv tv-home">
       <header className="home-head">
@@ -602,6 +628,7 @@ export default function Tv() {
           <span className="tv-status">
             <span className="ok-dot" /> Control conectado
           </span>
+          {screen?.showAll ? <span className="all-pill">Todas las categorías</span> : prefs?.categories?.length ? <span className="tv-updated">Tus categorías</span> : null}
           {!isFull && <span className="tv-updated">Hacé un clic para pantalla completa</span>}
           {radar && <span className="tv-updated">{updatedText(radar.updatedAt)}</span>}
           <span className="home-clock">{clock}</span>
@@ -644,13 +671,13 @@ export default function Tv() {
                 const k = itemKey(it);
                 const sel = k === cursorKey;
                 return (
-                  <article key={k} ref={sel ? selectedRef : null} className={`tv-card ${sel ? 'is-sel' : ''}`}>
+                  <article key={k} ref={sel ? selectedRef : null} className={`tv-card ${sel ? 'is-sel' : ''} ${it.offline ? 'is-off' : ''}`}>
                     <div className="card-img">
                       <Thumb item={it} stamp={IS_SMART_TV ? '' : stamp} />
-                      <span className="live-pill small">En vivo</span>
+                      {!it.offline && <span className="live-pill small">En vivo</span>}
                     </div>
                     <strong>{it.channel}</strong>
-                    <span>{it.title}</span>
+                    <span>{it.offline ? 'No está en vivo ahora' : it.title}</span>
                   </article>
                 );
               })}

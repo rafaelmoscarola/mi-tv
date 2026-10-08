@@ -194,3 +194,23 @@ select.field { appearance: auto; }
 @media (prefers-reduced-motion: reduce) {
   .phone-player.fly-up, .phone-player.fly-in, .welcome-ok { animation: none; }
 }
+
+/* ---------- Tanda 2 ---------- */
+.ncard { position: relative; }
+.ncard-main { border: 0; background: none; padding: 0; text-align: left; color: var(--text); display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.ncard-main strong { font-size: 14px; }
+.ncard-main small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ncard.is-on .ncard-main .ncard-img { outline: 3px solid var(--text); outline-offset: -3px; }
+.ncard.is-off { opacity: 0.5; }
+.star { position: absolute; top: 4px; right: 4px; width: 40px; height: 40px; border: 0; border-radius: 50%; background: rgba(14, 19, 32, 0.75); color: var(--text); font-size: 20px; line-height: 1; }
+.star.is-fav { color: #ffc24a; }
+.star.inline { position: static; flex-shrink: 0; background: var(--surface); }
+.now { position: relative; }
+.cats-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.all-btn { border: 0; border-radius: 999px; padding: 10px 16px; font-weight: 800; font-size: 15px; background: var(--live); color: #fff; }
+.all-btn.is-on { background: var(--surface); color: var(--text); }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.cat-chip { border: 1px solid var(--surface-2); background: var(--ground); color: var(--text); border-radius: 999px; padding: 10px 14px; font-size: 14px; font-weight: 600; }
+.cat-chip.is-on { background: var(--text); color: var(--ground); border-color: var(--text); }
+.tv-card.is-off { opacity: 0.45; }
+.all-pill { background: var(--live); color: #fff; font-weight: 700; font-size: 1.8vh; padding: 0.6vh 1.4vh; border-radius: 1vh; }

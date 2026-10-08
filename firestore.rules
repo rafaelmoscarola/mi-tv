@@ -5,7 +5,16 @@ service cloud.firestore {
 
     // Perfil de cada usuario (por ahora: qué tele tiene emparejada y sus recientes)
     match /users/{uid} {
+      // La tele emparejada puede leer las preferencias de su dueño y anotar lo que se mira
+      function isMyTv() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/screens/$(request.auth.uid))
+          && get(/databases/$(database)/documents/screens/$(request.auth.uid)).data.get('ownerUid', null) == uid;
+      }
       allow read, write: if signedIn() && request.auth.uid == uid;
+      allow get: if isMyTv();
+      allow update: if isMyTv()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stats', 'recentlyWatched']);
     }
 
     // Códigos de 4 números que muestra la tele para emparejar
