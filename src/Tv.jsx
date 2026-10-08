@@ -24,6 +24,7 @@ export default function Tv() {
   const [screen, setScreen] = useState(undefined);
   const [codeTick, setCodeTick] = useState(0);
   const [showTitle, setShowTitle] = useState(false);
+  const [pairError, setPairError] = useState('');
   const iframeRef = useRef(null);
   const volumeRef = useRef(70);
   const clock = useClock();
@@ -42,38 +43,49 @@ export default function Tv() {
   useEffect(() => {
     if (!uid) return;
     const ref = doc(db, 'screens', uid);
-    setDoc(ref, { tvUid: uid, seenAt: serverTimestamp() }, { merge: true }).catch(console.error);
+    setDoc(ref, { tvUid: uid, seenAt: serverTimestamp() }, { merge: true }).catch((e) => {
+      console.error(e);
+      setPairError(`No se pudo crear la pantalla (${e.code || e.message})`);
+    });
     return onSnapshot(
       ref,
       (s) => setScreen(s.data() || null),
-      (e) => console.error(e)
+      (e) => {
+        console.error(e);
+        setPairError(`No se puede leer la pantalla (${e.code || e.message})`);
+      }
     );
   }, [uid]);
 
   // Mientras no haya celu emparejado, muestra un código y lo renueva cuando vence
   useEffect(() => {
-    if (!uid || !screen || screen.ownerUid) return;
-    const fresh = screen.pairCode && screen.pairExpires > Date.now();
+    if (!uid || screen === undefined || screen?.ownerUid) return;
+    const fresh = screen?.pairCode && screen.pairExpires > Date.now();
     if (fresh) {
       const t = setTimeout(() => setCodeTick((n) => n + 1), screen.pairExpires - Date.now() + 500);
       return () => clearTimeout(t);
     }
     let cancelled = false;
     (async () => {
+      let lastError = null;
       for (let i = 0; i < 6 && !cancelled; i++) {
         const code = randomCode();
         const expires = Date.now() + CODE_TTL;
         try {
           await setDoc(doc(db, 'pairCodes', code), { screenId: uid, expires });
-          if (screen.pairCode && screen.pairCode !== code) {
+          if (screen?.pairCode && screen.pairCode !== code) {
             deleteDoc(doc(db, 'pairCodes', screen.pairCode)).catch(() => {});
           }
-          await updateDoc(doc(db, 'screens', uid), { pairCode: code, pairExpires: expires });
+          await setDoc(doc(db, 'screens', uid), { pairCode: code, pairExpires: expires }, { merge: true });
+          setPairError('');
           return;
-        } catch {
-          // ese código lo está usando otra tele: probamos con otro
+        } catch (e) {
+          // puede ser que ese código lo use otra tele: probamos con otro
+          lastError = e;
+          console.error(e);
         }
       }
+      if (!cancelled && lastError) setPairError(`No se pudo crear el código (${lastError.code || lastError.message})`);
     })();
     return () => {
       cancelled = true;
@@ -131,6 +143,7 @@ export default function Tv() {
           {screen?.pairCode || '····'}
         </div>
         <p className="tv-muted">El código cambia cada 10 minutos.</p>
+        {pairError && <p className="tv-error">{pairError}</p>}
       </main>
     );
   }
