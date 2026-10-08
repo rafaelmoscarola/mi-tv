@@ -90,7 +90,7 @@ export default function Tv() {
     return () => {
       cancelled = true;
     };
-  }, [uid, screen?.ownerUid, screen?.pairCode, screen?.pairExpires, codeTick]);
+  }, [uid, screen === undefined, screen?.ownerUid, screen?.pairCode, screen?.pairExpires, codeTick]);
 
   // Ya emparejada: borra el código para que nadie más lo use
   useEffect(() => {
