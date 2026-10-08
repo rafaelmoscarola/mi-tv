@@ -1,9 +1,10 @@
 {
-  "id": "/",
-  "name": "Mi TV",
+  "id": "/tv",
+  "name": "Mi TV · Pantalla",
   "short_name": "Mi TV",
-  "start_url": "/",
-  "display": "standalone",
+  "start_url": "/tv",
+  "scope": "/tv",
+  "display": "fullscreen",
   "background_color": "#0E1320",
   "theme_color": "#0E1320",
   "icons": [

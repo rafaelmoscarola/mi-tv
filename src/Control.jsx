@@ -176,6 +176,10 @@ function Remote({ user, profile, screen }) {
         </div>
       </section>
 
+      {screen?.soundBlocked && (
+        <p className="notice">La tele arrancó sin sonido: hacé un clic en la pantalla de la compu (solo una vez). Instalando Mi TV en la compu no se vuelve a pedir.</p>
+      )}
+
       <section className="pad">
         <button className="btn" onClick={() => write({ mode: 'home' })}>Inicio</button>
         <button className="btn" onClick={() => cmd('mute')}>Silencio</button>

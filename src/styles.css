@@ -34,7 +34,14 @@ button:focus-visible, input:focus-visible { outline: 3px solid var(--text); outl
 .live-dot { background: var(--live); }
 .tv-off { background: #000; display: flex; align-items: flex-end; justify-content: flex-end; padding: 4vh; }
 .tv-off-clock { font-family: var(--display); font-size: 3vh; color: #3b3f48; }
-.tv-play iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+.tv-player, .tv-player iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+.tv-sound {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: rgba(14, 19, 32, 0.92); border-radius: 2vh; padding: 3vh 4vh; text-align: center;
+  font-family: var(--display); font-weight: 600; font-size: 3.6vh; display: flex; flex-direction: column; gap: 1.2vh;
+}
+.tv-sound small { font-family: var(--body); font-weight: 400; font-size: 2.2vh; color: var(--muted); }
+.tv-install { margin-top: 2vh; border: 0; border-radius: 1.4vh; background: var(--surface-2); color: var(--text); font-weight: 700; font-size: 2.4vh; padding: 1.6vh 3vh; }
 .tv-toast {
   position: fixed; left: 4vh; bottom: 4vh; display: flex; align-items: center; gap: 1.2vh;
   background: rgba(14, 19, 32, 0.88); padding: 1.6vh 2.4vh; border-radius: 1.4vh;
@@ -67,6 +74,7 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 19px; margin: 0; 
 .now div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .now-label { font-size: 13px; color: var(--muted); }
 .now strong { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notice { margin: 0; background: #33270f; color: #ffd27a; border-radius: 14px; padding: 12px 14px; font-size: 15px; line-height: 1.4; }
 .pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .recent { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .recent button { width: 100%; display: flex; align-items: center; gap: 12px; background: var(--ground); border: 0; border-radius: 12px; padding: 8px; text-align: left; font-weight: 600; }
