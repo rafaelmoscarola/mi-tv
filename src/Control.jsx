@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { arrayUnion, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
-import { parseYouTube } from './youtube';
+import { parseYouTube, embedUrl } from './youtube';
 import { CATEGORIES } from './categories';
 import { SEED } from './seed';
 import { useRadar, buildRows, flatten, itemKey, viewersText, updatedText } from './radar';
@@ -55,17 +55,17 @@ export default function Control() {
   if (user === undefined) return <Shell><p className="muted">Cargando…</p></Shell>;
   if (!user) return <Login />;
   if (!profile) return <Shell><p className="muted">Cargando tu perfil…</p></Shell>;
-  if (!profile.screenId || screenLost) return <Pair user={user} lost={screenLost} />;
-  return <Remote user={user} profile={profile} screen={screen} />;
+  return <Home user={user} profile={profile} screen={screenLost ? null : screen} screenLost={screenLost} />;
 }
 
-function Shell({ children }) {
+function Shell({ children, right }) {
   return (
     <main className="ctl">
       <header className="ctl-head">
         <div className="logo">
           Mi<span>TV</span>
         </div>
+        {right}
       </header>
       {children}
     </main>
@@ -85,8 +85,8 @@ function Login() {
   return (
     <Shell>
       <section className="card center">
-        <h1>Tu tele, desde el celular</h1>
-        <p className="muted">Entrá con tu cuenta de Google para usar el control.</p>
+        <h1>Todo lo que está en vivo, en un solo lugar</h1>
+        <p className="muted">Entrá con tu cuenta de Google para empezar.</p>
         <button className="btn primary big" onClick={login}>
           Entrar con Google
         </button>
@@ -96,7 +96,8 @@ function Login() {
   );
 }
 
-function Pair({ user, lost }) {
+// Emparejar una tele (ahora es opcional: la app funciona sola en el celu)
+function Pair({ user, lost, onClose }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(lost ? 'Tu tele se desvinculó. Emparejala de nuevo con el código que muestra.' : '');
@@ -114,6 +115,7 @@ function Pair({ user, lost }) {
       const screenId = pc.data().screenId;
       await updateDoc(doc(db, 'screens', screenId), { ownerUid: user.uid, claimCode: code, mode: 'home' });
       await setDoc(doc(db, 'users', user.uid), { screenId }, { merge: true });
+      onClose?.();
     } catch {
       setError('No se pudo emparejar. Revisá el código y probá de nuevo.');
     } finally {
@@ -122,39 +124,89 @@ function Pair({ user, lost }) {
   };
 
   return (
-    <Shell>
-      <section className="card center">
-        <h1>Emparejá tu tele</h1>
-        <p className="muted">En la tele abrí la dirección de Mi TV terminada en /tv y escribí acá el código que aparece.</p>
-        <input
-          className="code-input"
-          inputMode="numeric"
-          maxLength={4}
-          value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-          placeholder="0000"
-          aria-label="Código de la tele"
-        />
-        <button className="btn primary big" onClick={pair} disabled={busy}>
-          {busy ? 'Emparejando…' : 'Emparejar'}
-        </button>
-        {error && <p className="error">{error}</p>}
-      </section>
-      <button className="link" onClick={() => signOut(auth)}>
-        Salir de {user.email}
+    <section className="card center">
+      <h2>Conectar una tele</h2>
+      <p className="muted small">
+        En la tele (compu o Smart TV) abrí <strong>mi-tv-sand.vercel.app/tv</strong> y escribí acá el código que aparece.
+      </p>
+      <input
+        className="code-input"
+        inputMode="numeric"
+        maxLength={4}
+        value={code}
+        onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+        placeholder="0000"
+        aria-label="Código de la tele"
+      />
+      <button className="btn primary big" onClick={pair} disabled={busy}>
+        {busy ? 'Conectando…' : 'Conectar'}
       </button>
-    </Shell>
+      {onClose && (
+        <button className="link" onClick={onClose}>
+          Ahora no
+        </button>
+      )}
+      {error && <p className="error">{error}</p>}
+    </section>
   );
 }
 
-function Remote({ user, profile, screen }) {
+// Reproductor del celu
+function PhonePlayer({ item, flying, onToTv, canTv, onClose }) {
+  const src = embedUrl(item);
+  return (
+    <section className={`phone-player ${flying}`}>
+      <div className="phone-video">{src && <iframe src={src} title={item.title || item.channel} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />}</div>
+      <div className="phone-info">
+        <div className="phone-text">
+          <strong>{item.channel}</strong>
+          <span>{item.title}</span>
+        </div>
+        <button className="btn primary to-tv" onClick={onToTv}>
+          {canTv ? 'Ver en la tele' : 'Conectar tele'}
+        </button>
+        <button className="icon-btn" onClick={onClose} aria-label="Cerrar reproductor">
+          ×
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Fila estilo Netflix: se desliza de costado
+function Row({ title, items, onPick, activeKey }) {
+  return (
+    <section className="nrow">
+      <h2>{title}</h2>
+      <div className="nrow-cards">
+        {items.map((it) => (
+          <button key={itemKey(it)} className={`ncard ${itemKey(it) === activeKey ? 'is-on' : ''}`} onClick={() => onPick(it)}>
+            <span className="ncard-img">
+              {it.thumb ? <img src={it.thumb} alt="" loading="lazy" /> : <span className="thumb-ph" />}
+              <span className="live-pill tiny">En vivo</span>
+            </span>
+            <strong>{it.channel}</strong>
+            <small>{it.title}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Home({ user, profile, screen, screenLost }) {
   const [msg, setMsg] = useState('');
   const [tab, setTab] = useState('vivo');
-  const screenRef = doc(db, 'screens', profile.screenId);
+  const [pairing, setPairing] = useState(false);
+  const [phoneItem, setPhoneItem] = useState(null); // lo que se ve en el celu
+  const [flying, setFlying] = useState(''); // animación: 'fly-up' (a la tele) o 'fly-in' (al celu)
   const isAdmin = !!ADMIN_EMAIL && (user.email || '').toLowerCase() === ADMIN_EMAIL;
   const { data: radar, error: radarError } = useRadar(true);
   const rows = useMemo(() => buildRows(radar?.live), [radar]);
   const list = useMemo(() => flatten(rows), [rows]);
+  const paired = !!profile.screenId && !!screen;
+  const screenRef = profile.screenId ? doc(db, 'screens', profile.screenId) : null;
+  const tvActive = paired && !phoneItem && (screen?.mode === 'play' || screen?.mode === 'peek');
 
   // Agrupa los toques rápidos: manda como máximo una orden cada 300 ms (la última gana)
   const pendingRef = useRef({});
@@ -166,6 +218,7 @@ function Remote({ user, profile, screen }) {
     timerRef.current = null;
     const data = pendingRef.current;
     pendingRef.current = {};
+    if (!screenRef) return;
     const reqAt = Date.now();
     lastSentRef.current = reqAt;
     setSentAt(reqAt);
@@ -180,7 +233,6 @@ function Remote({ user, profile, screen }) {
   };
   const cmd = (name) => write({ cmd: { name, at: Date.now() } });
 
-  // Si la tele no confirma en 5 segundos, avisa
   const acked = !sentAt || screen?.ack >= sentAt;
   useEffect(() => {
     if (acked) return setNoAnswer(false);
@@ -188,14 +240,55 @@ function Remote({ user, profile, screen }) {
     return () => clearTimeout(t);
   }, [acked, sentAt]);
 
-  const play = (item) => {
+  const soundNotice = useSteady(!!screen?.soundBlocked, 2500);
+  const troubleNotice = useSteady(screen?.trouble || '', 1500);
+  const rebooting = (screen?.recentBoots || 0) >= 3 && Date.now() - (screen?.bootAt || 0) < 5 * 60000;
+  const notice = !tvActive
+    ? ''
+    : rebooting
+    ? 'La tele se reinició varias veces en pocos minutos: su navegador se está quedando sin memoria. Probá cerrar y abrir el navegador de la tele.'
+    : troubleNotice === 'frozen'
+    ? 'La tele se está trabando con este video. Probá otro canal.'
+    : soundNotice
+    ? 'La tele está sin sonido: hacé un clic o apretá OK en el control de la tele (una sola vez).'
+    : '';
+
+  const localCursor = useRef(null);
+
+  // Tocar un canal: se ve donde estás mirando (si la tele está activa, en la tele; si no, en el celu)
+  const pick = (item) => {
     setMsg('');
     localCursor.current = item;
-    write({ mode: 'play', current: item, cursor: item });
+    if (tvActive) write({ mode: 'play', current: item, cursor: item });
+    else {
+      setFlying('');
+      setPhoneItem(item);
+    }
   };
 
-  // Zapping de vistazo: mueve el cursor y muestra la imagen del canal, sin cargar video
-  const localCursor = useRef(null);
+  // "Volar" a la tele: el video del celu se va hacia arriba y arranca en la tele
+  const toTv = () => {
+    if (!paired) return setPairing(true);
+    const item = phoneItem;
+    setFlying('fly-up');
+    write({ mode: 'play', current: item, cursor: item });
+    setTimeout(() => {
+      setPhoneItem(null);
+      setFlying('');
+    }, 550);
+  };
+
+  // "Traer al celu": la tele vuelve a la grilla y el video baja volando al celu
+  const toPhone = () => {
+    const item = screen?.current || screen?.cursor;
+    if (!item) return;
+    write({ mode: 'home' });
+    setFlying('fly-in');
+    setPhoneItem(item);
+    setTimeout(() => setFlying(''), 550);
+  };
+
+  // Zapping de vistazo en la tele
   const zap = (dir) => {
     if (!list.length) return setMsg('Todavía no hay canales en vivo para recorrer.');
     const from = itemKey(localCursor.current || screen?.cursor || screen?.current);
@@ -206,61 +299,66 @@ function Remote({ user, profile, screen }) {
   };
   const ok = () => {
     const it = localCursor.current || screen?.cursor;
-    if (it) play(it);
+    if (it) write({ mode: 'play', current: it, cursor: it });
   };
 
   const unpair = async () => {
-    if (!confirm('¿Desvincular esta tele? Vas a necesitar un código nuevo para volver a emparejarla.')) return;
-    await updateDoc(screenRef, { ownerUid: null, mode: 'home', current: null, cursor: null }).catch(() => {});
+    if (!confirm('¿Desvincular esta tele? Vas a necesitar un código nuevo para volver a conectarla.')) return;
+    if (screenRef) await updateDoc(screenRef, { ownerUid: null, mode: 'home', current: null, cursor: null }).catch(() => {});
     await setDoc(doc(db, 'users', user.uid), { screenId: null }, { merge: true });
   };
 
-  const soundNotice = useSteady(!!screen?.soundBlocked, 2500);
-  const troubleNotice = useSteady(screen?.trouble || '', 1500);
-  const rebooting = (screen?.recentBoots || 0) >= 3 && Date.now() - (screen?.bootAt || 0) < 5 * 60000;
-  const notice = rebooting
-    ? 'La tele se reinició varias veces en pocos minutos: su navegador se está quedando sin memoria. Probá cerrar y abrir el navegador de la tele.'
-    : troubleNotice === 'frozen'
-    ? 'La tele se está trabando con este video. Probá otro canal; si sigue, esta tele puede necesitar el modo "transmitir".'
-    : soundNotice
-    ? 'La tele está sin sonido: hacé un clic o apretá OK en el control de la tele (una sola vez).'
-    : '';
-
-  const now = screen?.mode === 'play' ? screen?.current : null;
-  const peeking = screen?.mode === 'peek' ? screen?.cursor : null;
+  const onTv = screen?.mode === 'play' ? screen?.current : screen?.mode === 'peek' ? screen?.cursor : null;
+  const tvChip = paired ? (
+    <span className={`chip ${noAnswer ? 'bad' : 'ok'}`}>{noAnswer ? 'Tele sin respuesta' : 'Tele conectada'}</span>
+  ) : (
+    <button className="chip action" onClick={() => setPairing(true)}>
+      Conectar tele
+    </button>
+  );
 
   return (
-    <Shell>
-      <section className="now">
-        {(now || peeking)?.thumb ? <img src={(now || peeking).thumb} alt="" /> : <div className="now-ph" />}
-        <div>
-          <span className="now-label">
-            {screen?.mode === 'off' ? 'Tele apagada' : now ? 'En la tele ahora' : peeking ? 'Vistazo' : 'Tele en inicio'}
-          </span>
-          <strong>{(now || peeking)?.channel || (screen?.mode === 'off' ? 'Pantalla en negro' : 'Grilla de canales')}</strong>
-          {(now || peeking)?.title && <span className="now-title">{(now || peeking).title}</span>}
-        </div>
-      </section>
+    <Shell right={tvChip}>
+      {(pairing || screenLost) && <Pair user={user} lost={screenLost} onClose={() => setPairing(false)} />}
 
-      <p className={`link-state ${noAnswer ? 'bad' : acked ? 'ok' : ''}`} role="status">
-        {noAnswer ? 'La tele no responde. ¿Está prendida y con internet?' : acked ? 'Tele conectada' : 'Enviando…'}
-      </p>
+      {phoneItem && (
+        <PhonePlayer item={phoneItem} flying={flying} canTv={paired} onToTv={toTv} onClose={() => setPhoneItem(null)} />
+      )}
 
-      {notice && <p className="notice">{notice}</p>}
+      {tvActive && (
+        <section className={`remote ${flying === 'fly-in' ? 'fade-out' : ''}`}>
+          <div className="now">
+            {onTv?.thumb ? <img src={onTv.thumb} alt="" /> : <div className="now-ph" />}
+            <div>
+              <span className="now-label">{screen?.mode === 'peek' ? 'Vistazo en la tele' : 'En la tele ahora'}</span>
+              <strong>{onTv?.channel || 'Mi TV'}</strong>
+              {onTv?.title && <span className="now-title">{onTv.title}</span>}
+            </div>
+          </div>
+          {notice && <p className="notice">{notice}</p>}
+          <section className="pad zap">
+            <button className="btn" onClick={() => zap(-1)}>Canal −</button>
+            <button className="btn primary" onClick={ok}>OK</button>
+            <button className="btn" onClick={() => zap(1)}>Canal +</button>
+          </section>
+          <section className="pad">
+            <button className="btn" onClick={() => cmd('volDown')}>Vol −</button>
+            <button className="btn" onClick={() => cmd('mute')}>Silencio</button>
+            <button className="btn" onClick={() => cmd('volUp')}>Vol +</button>
+            <button className="btn" onClick={() => write({ mode: 'home' })}>Inicio</button>
+            <button className="btn" onClick={toPhone}>Traer al celu</button>
+            <button className="btn danger" onClick={() => write({ mode: 'off' })}>Apagar</button>
+          </section>
+        </section>
+      )}
 
-      <section className="pad zap">
-        <button className="btn" onClick={() => zap(-1)}>Canal −</button>
-        <button className="btn primary" onClick={ok}>OK</button>
-        <button className="btn" onClick={() => zap(1)}>Canal +</button>
-      </section>
-      <section className="pad">
-        <button className="btn" onClick={() => write({ mode: 'home' })}>Inicio</button>
-        <button className="btn" onClick={() => cmd('mute')}>Silencio</button>
-        <button className="btn" onClick={() => cmd('unmute')}>Con sonido</button>
-        <button className="btn" onClick={() => cmd('volDown')}>Vol −</button>
-        <button className="btn" onClick={() => cmd('volUp')}>Vol +</button>
-        <button className="btn danger" onClick={() => write({ mode: 'off' })}>Apagar</button>
-      </section>
+      {paired && !tvActive && !phoneItem && (
+        <section className="pad zap">
+          <button className="btn" onClick={() => zap(-1)}>Canal −</button>
+          <button className="btn" onClick={() => write({ mode: 'home' })}>Inicio tele</button>
+          <button className="btn" onClick={() => zap(1)}>Canal +</button>
+        </section>
+      )}
       {msg && <p className="error">{msg}</p>}
 
       <nav className="tabs">
@@ -272,7 +370,7 @@ function Remote({ user, profile, screen }) {
       </nav>
 
       {tab === 'vivo' && (
-        <section className="live-list">
+        <section className="live-rows">
           {radarError && <p className="error">El radar no respondió: {radarError}</p>}
           {!radar && !radarError && <p className="muted">Buscando qué está en vivo…</p>}
           {radar && !rows.length && (
@@ -280,28 +378,26 @@ function Remote({ user, profile, screen }) {
           )}
           {radar && <p className="muted small">{updatedText(radar.updatedAt)}</p>}
           {rows.map((row) => (
-            <div key={row.title} className="live-group">
-              <h2>{row.title}</h2>
-              {row.items.map((it) => (
-                <button key={itemKey(it)} className="live-item" onClick={() => play(it)}>
-                  {it.thumb ? <img src={it.thumb} alt="" /> : <span className="thumb-ph" />}
-                  <span className="live-text">
-                    <strong>{it.channel}</strong>
-                    <span>{it.title}</span>
-                    {it.viewers > 0 && <small>{viewersText(it.viewers)}</small>}
-                  </span>
-                </button>
-              ))}
-            </div>
+            <Row
+              key={row.title}
+              title={row.title}
+              items={row.items}
+              onPick={pick}
+              activeKey={itemKey(phoneItem || onTv)}
+            />
           ))}
         </section>
       )}
 
       {tab === 'prox' && <Upcoming items={radar?.upcoming || []} />}
-      {tab === 'admin' && isAdmin && <Admin onPlay={play} />}
+      {tab === 'admin' && isAdmin && <Admin onPlay={pick} />}
 
       <footer className="ctl-foot">
-        <button className="link" onClick={unpair}>Desvincular tele</button>
+        {paired ? (
+          <button className="link" onClick={unpair}>Desvincular tele</button>
+        ) : (
+          <span />
+        )}
         <button className="link" onClick={() => signOut(auth)}>Salir</button>
       </footer>
     </Shell>
@@ -470,7 +566,7 @@ function Seed({ catalog }) {
   useEffect(() => onSnapshot(configRef, (s) => setDone(s.data()?.done || []), () => setDone([])), []);
 
   const pending = done ? SEED.filter((e) => !done.includes(e.q) && !found.some((f) => f.entry.q === e.q)) : [];
-  const markDone = (q) => setDoc(configRef, { done: [...(done || []), q] }, { merge: true });
+  const markDone = (q) => setDoc(configRef, { done: arrayUnion(q) }, { merge: true });
 
   const searchNext = async () => {
     setBusy(true);
@@ -519,6 +615,16 @@ function Seed({ catalog }) {
       {pending.length > 0 && (
         <button className="btn" onClick={searchNext} disabled={busy}>
           {busy ? 'Buscando…' : 'Buscar los siguientes 10'}
+        </button>
+      )}
+      {found.some((r) => r.ch && !r.already) && (
+        <button
+          className="btn primary"
+          onClick={async () => {
+            for (const r of found.filter((x) => x.ch && !x.already)) await accept(r);
+          }}
+        >
+          Aceptar todos los encontrados
         </button>
       )}
       <ul className="catalog">

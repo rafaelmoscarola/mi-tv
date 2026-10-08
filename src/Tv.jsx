@@ -276,6 +276,22 @@ export default function Tv() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const freezesRef = useRef([]);
   const [trouble, setTrouble] = useState('');
+  // Bienvenida en Smart TV: un OK al principio habilita el sonido y la pantalla completa para toda la sesión
+  const [welcomed, setWelcomed] = useState(!IS_SMART_TV);
+  useEffect(() => {
+    if (welcomed) return;
+    const go = () => {
+      soundStateRef.current = 'ok';
+      document.documentElement.requestFullscreen?.().catch(() => {});
+      setWelcomed(true);
+    };
+    window.addEventListener('keydown', go);
+    window.addEventListener('pointerdown', go);
+    return () => {
+      window.removeEventListener('keydown', go);
+      window.removeEventListener('pointerdown', go);
+    };
+  }, [welcomed]);
   const playerRef = useRef(null);
   const volumeRef = useRef(70);
   const clock = useClock();
@@ -499,6 +515,21 @@ export default function Tv() {
         <p className="tv-muted">El código cambia cada 10 minutos.</p>
         {pairError && <p className="tv-error">{pairError}</p>}
         {installButton}
+      </main>
+    );
+  }
+
+  if (!welcomed) {
+    return (
+      <main className="tv tv-center tv-welcome">
+        <div className="tv-logo">
+          Mi<span>TV</span>
+        </div>
+        <h1 className="welcome-title">¡Bienvenido a Mi TV!</h1>
+        <p className="tv-lead">¿Estás ahí?</p>
+        <div className="welcome-ok">
+          Apretá <span>OK</span> para empezar
+        </div>
       </main>
     );
   }
