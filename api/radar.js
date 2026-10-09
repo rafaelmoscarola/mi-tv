@@ -1,8 +1,30 @@
 // EL RADAR: revisa los canales del catálogo y devuelve solo lo que está EN VIVO ahora.
 // Vercel guarda la respuesta 3 minutos y la comparte entre todos los usuarios,
 // así la cuota de YouTube no crece aunque haya muchas personas mirando.
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
 const PROJECT = process.env.VITE_FB_PROJECT_ID;
 const KEY = process.env.YOUTUBE_API_KEY;
+
+// Señales 24 horas: en estas categorías el radar busca solo el vivo si no lo encuentra
+const AUTO_24H = new Set(['Noticias', 'Radios']);
+const DAILY_SEARCH_LIMIT = 30; // tope de búsquedas especiales por día (100 fichas cada una)
+
+let adminDb = null;
+function getAdminDb() {
+  if (adminDb !== null) return adminDb;
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!raw) return (adminDb = false);
+    const app = getApps()[0] || initializeApp({ credential: cert(JSON.parse(raw)) });
+    adminDb = getFirestore(app);
+  } catch (e) {
+    console.error('Llave de servicio inválida', e);
+    adminDb = false;
+  }
+  return adminDb;
+}
 
 function field(f, k) {
   const v = f?.[k];
@@ -29,6 +51,8 @@ async function readCatalog() {
         category: field(f, 'category') || 'Otros',
         priority: Number(field(f, 'priority') || 0),
         always: field(f, 'always') === true,
+        liveVideoId: field(f, 'liveVideoId') || '',
+        liveCheckedAt: Number(field(f, 'liveCheckedAt') || 0),
       });
     }
     pageToken = j.nextPageToken || '';
@@ -42,7 +66,7 @@ async function recentIds(channelId) {
     const r = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
     if (!r.ok) return [];
     const xml = await r.text();
-    return [...xml.matchAll(/<yt:videoId>([\w-]{11})<\/yt:videoId>/g)].slice(0, 6).map((m) => m[1]);
+    return [...xml.matchAll(/<yt:videoId>([\w-]{11})<\/yt:videoId>/g)].slice(0, 15).map((m) => m[1]);
   } catch {
     return [];
   }
@@ -83,7 +107,8 @@ export default async function handler(req, res) {
     const catalog = await readCatalog();
     const byId = Object.fromEntries(catalog.map((c) => [c.channelId, c]));
     const lists = await pool(catalog, 20, (c) => recentIds(c.channelId));
-    const ids = [...new Set(lists.flat())];
+    const remembered = catalog.map((c) => c.liveVideoId).filter(Boolean);
+    const ids = [...new Set([...lists.flat(), ...remembered])];
     const videos = ids.length ? await videoDetails(ids) : [];
 
     const now = Date.now();
@@ -117,6 +142,68 @@ export default async function handler(req, res) {
       }
     }
 
+    // Señales 24 horas sin vivo detectado: búsqueda especial (con tope diario) y el radar la recuerda
+    const auto = { searched: 0, found: 0 };
+    const db = getAdminDb();
+    if (db) {
+      const now2 = Date.now();
+      const today = new Date().toISOString().slice(0, 10);
+      const budgetRef = db.collection('config').doc('radar');
+      const budgetSnap = await budgetRef.get();
+      const budget = budgetSnap.exists && budgetSnap.data().day === today ? budgetSnap.data().searches || 0 : 0;
+      let left = Math.max(0, DAILY_SEARCH_LIMIT - budget);
+      const candidates = catalog
+        .filter((c) => (c.always || AUTO_24H.has(c.category)) && !liveChannels.has(c.channelId))
+        .filter((c) => {
+          const age = now2 - (c.liveCheckedAt || 0);
+          // si tenía un vivo recordado que terminó, vuelve a buscar a los 30 min; si no, cada 12 h
+          return c.liveVideoId ? age > 30 * 60000 : age > 12 * 3600000;
+        })
+        .sort((a, b) => (a.liveCheckedAt || 0) - (b.liveCheckedAt || 0))
+        .slice(0, Math.min(left, 3));
+      const foundIds = [];
+      for (const c of candidates) {
+        try {
+          const r = await fetch(
+            `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${c.channelId}&eventType=live&type=video&maxResults=1&key=${KEY}`
+          );
+          const j = await r.json();
+          if (j.error) throw new Error(j.error.message);
+          auto.searched += 1;
+          const vid = j.items?.[0]?.id?.videoId || '';
+          await db.collection('catalog').doc(c.channelId).set({ liveVideoId: vid, liveCheckedAt: now2 }, { merge: true });
+          if (vid) foundIds.push(vid);
+        } catch (e) {
+          console.error('Búsqueda de vivo', c.name, e.message);
+          break;
+        }
+      }
+      if (auto.searched) await budgetRef.set({ day: today, searches: budget + auto.searched }, { merge: true });
+      if (foundIds.length) {
+        for (const v of await videoDetails(foundIds)) {
+          const c = byId[v.snippet?.channelId];
+          const d = v.liveStreamingDetails || {};
+          if (!c || v.snippet.liveBroadcastContent !== 'live' || d.actualEndTime) continue;
+          auto.found += 1;
+          live.push({
+            kind: 'video',
+            id: v.id,
+            channelId: c.channelId,
+            channel: c.name || v.snippet.channelTitle,
+            logo: c.logo,
+            category: c.category,
+            priority: c.priority,
+            title: v.snippet.title,
+            thumb: `https://i.ytimg.com/vi/${v.id}/hqdefault_live.jpg`,
+            live: true,
+            viewers: Number(d.concurrentViewers || 0),
+            startedAt: d.actualStartTime || null,
+          });
+          liveChannels.add(c.channelId);
+        }
+      }
+    }
+
     // Canales marcados "24 horas" (noticias, cámaras): se muestran aunque su vivo sea viejo
     for (const c of catalog) {
       if (c.always && !liveChannels.has(c.channelId)) {
@@ -139,7 +226,7 @@ export default async function handler(req, res) {
 
     upcoming.sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
     res.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=120');
-    res.status(200).json({ updatedAt: new Date().toISOString(), channels: catalog.length, live, upcoming });
+    res.status(200).json({ updatedAt: new Date().toISOString(), channels: catalog.length, auto, live, upcoming });
   } catch (e) {
     res.setHeader('Cache-Control', 's-maxage=30');
     res.status(500).json({ error: String(e.message || e) });
