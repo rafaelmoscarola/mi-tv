@@ -173,9 +173,11 @@ function Pair({ user, lost, onClose, onHelp }) {
 // Reproductor del celu
 function PhonePlayer({ item, flying, onToTv, canTv, onClose, isFav, onFav }) {
   const src = embedUrl(item);
+  // Mientras "vuela" a la tele, el video ya está cortado y se muestra solo la foto
+  const leaving = flying === 'fly-up';
   return (
     <section className={`phone-player ${flying}`}>
-      <div className="phone-video">{src && <iframe src={src} title={item.title || item.channel} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />}</div>
+      <div className="phone-video">{leaving ? <img src={item.thumb} alt="" className="phone-still" /> : src && <iframe src={src} title={item.title || item.channel} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen />}</div>
       <div className="phone-info">
         <div className="phone-text">
           <strong>{item.channel}</strong>
@@ -375,11 +377,12 @@ function Home({ user, profile, screen, screenLost }) {
   const toTv = () => {
     if (!paired) return setPairing(true);
     const item = phoneItem;
+    // Primero se corta el video del celu (la animación usa la foto), así YouTube no pausa la tele
     setFlying('fly-up');
-    write({ mode: 'play', current: item, cursor: item });
     setTimeout(() => {
       setPhoneItem(null);
       setFlying('');
+      write({ mode: 'play', current: item, cursor: item });
     }, 550);
   };
 
@@ -611,6 +614,12 @@ function Home({ user, profile, screen, screenLost }) {
           ¿Cómo la veo en la tele?
         </button>
       </section>
+
+      {window.innerWidth >= 900 && (
+        <a className="btn big-screen" href="/tv">
+          Usar esta pantalla como tele
+        </a>
+      )}
 
       <footer className="ctl-foot">
         {paired ? (
@@ -893,6 +902,11 @@ function Signals24({ catalog, radar }) {
         {radar?.auto && !radar.auto.admin ? ` (aviso: ${radar.auto.reason})` : ''}.
       </p>
       {radar?.auto?.replaced?.length > 0 && <p className="notice">Corregido automáticamente: {radar.auto.replaced.join(', ')}</p>}
+      {radar?.auto?.blocked?.length > 0 && (
+        <p className="notice">
+          Ocultos porque no permiten verse fuera de YouTube: {[...new Set(radar.auto.blocked.map((b) => b.channel))].join(', ')}
+        </p>
+      )}
       <ul className="catalog">
         {list.map((c) => (
           <li key={c.channelId}>

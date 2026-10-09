@@ -236,6 +236,19 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
         },
       });
     });
+    // La tele nunca se queda en pausa: la app no tiene botón de pausa, así que si se pausó, le da play sola
+    const keepPlaying = setInterval(() => {
+      const p = playerRef.current;
+      if (!p || !readyRef.current) return;
+      try {
+        const st = p.getPlayerState?.();
+        if (st === 2 || st === 5) {
+          if (soundStateRef.current === 'blocked') p.mute();
+          p.playVideo();
+        }
+      } catch {}
+    }, 4000);
+
     // Guardián anti-congelamiento: si dice "reproduciendo" o "cargando" pero la imagen no avanza, recarga
     let lastT = -1;
     let stuck = 0;
@@ -261,6 +274,7 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
       clearTimeout(checkTimer);
       clearInterval(liveTimer);
       clearInterval(watchdog);
+      clearInterval(keepPlaying);
       readyRef.current = false;
       try {
         playerRef.current?.destroy?.();

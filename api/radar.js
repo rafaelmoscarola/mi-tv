@@ -132,7 +132,7 @@ async function yt(path) {
 async function videoDetails(ids) {
   const out = [];
   for (let i = 0; i < ids.length; i += 50) {
-    const j = await yt(`videos?part=snippet,liveStreamingDetails&id=${ids.slice(i, i + 50).join(',')}`);
+    const j = await yt(`videos?part=snippet,liveStreamingDetails,status&id=${ids.slice(i, i + 50).join(',')}`);
     out.push(...(j.items || []));
   }
   return out;
@@ -168,6 +168,7 @@ function toItem(v, c) {
     viewers: Number(d.concurrentViewers || 0),
     startedAt: d.actualStartTime || null,
     scheduledAt: d.scheduledStartTime || null,
+    embeddable: v.status?.embeddable !== false,
   };
 }
 
@@ -343,26 +344,15 @@ export default async function handler(req, res) {
       }
     }
 
-    // 4) Canales marcados "24 horas" a mano que igual no se encontraron: se muestran con el vivo del canal
-    for (const c of catalog) {
-      if (c.always && !liveChannels.has(c.channelId)) {
-        live.push({
-          kind: 'channel',
-          id: c.channelId,
-          channelId: c.channelId,
-          channel: c.name,
-          logo: c.logo,
-          category: c.category,
-          priority: c.priority,
-          title: 'En vivo las 24 horas',
-          desc: '',
-          thumb: c.logo,
-          live: true,
-          always: true,
-          viewers: 0,
-        });
-      }
-    }
+    // 4) Señales 24 h cuyo vivo todavía no se encontró: NO se muestran (antes aparecían como "en vivo"
+    //    sin un video verificado y al tocarlas no se veía nada). Se informan aparte para el administrador.
+    auto.waiting = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId)).map((c) => c.name);
+
+    // Los vivos que no se pueden ver fuera de YouTube se sacan de la grilla (y se informan aparte)
+    const blocked = live.filter((i) => i.embeddable === false).map((i) => ({ channelId: i.channelId, channel: i.channel }));
+    for (let i = live.length - 1; i >= 0; i--) if (live[i].embeddable === false) live.splice(i, 1);
+    for (let i = upcoming.length - 1; i >= 0; i--) if (upcoming[i].embeddable === false) upcoming.splice(i, 1);
+    auto.blocked = blocked;
 
     upcoming.sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
     res.setHeader('Cache-Control', 's-maxage=180, stale-while-revalidate=120');
