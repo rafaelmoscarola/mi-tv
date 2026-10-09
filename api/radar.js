@@ -9,7 +9,20 @@ const KEY = process.env.YOUTUBE_API_KEY;
 
 // Señales 24 horas: en estas categorías el radar busca solo el vivo si no lo encuentra
 const AUTO_24H = new Set(['Noticias', 'Radios']);
-const DAILY_SEARCH_LIMIT = 30; // tope de búsquedas pagas por día (100 fichas cada una)
+const DAILY_SEARCH_LIMIT = 40; // tope de búsquedas pagas por día (100 fichas cada una)
+
+// Señales de noticias 24 h cargadas por su @usuario exacto (evita canales equivocados por nombre)
+const OFFICIAL_VERSION = 1;
+const OFFICIAL_24H = [
+  { handle: '@todonoticias', category: 'Noticias' },
+  { handle: '@LNmas', category: 'Noticias' },
+  { handle: '@A24com', category: 'Noticias' },
+  { handle: '@c5n', category: 'Noticias' },
+  { handle: '@canal26', category: 'Noticias' },
+  { handle: '@IPNoticias', category: 'Noticias' },
+  { handle: '@cronicatv', category: 'Noticias' },
+  { handle: '@TVPublicaArgentina', category: 'Noticias' },
+];
 
 let adminDb = null;
 let adminError = '';
@@ -193,19 +206,8 @@ export default async function handler(req, res) {
     };
     videos.forEach(addVideo);
 
-    // 2) Señales 24 h sin vivo: pregunta gratis por la dirección /live de cada canal
-    const auto = { admin: false, reason: '', checked: 0, freeFound: 0, searched: 0, searchFound: 0, replaced: [] };
-    const missing = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId));
-    auto.checked = missing.length;
-    const oembedIds = await pool(missing, 10, (c) => liveViaOembed(c.channelId));
-    const freeIds = [...new Set(oembedIds.filter(Boolean))];
-    if (freeIds.length) {
-      for (const v of await videoDetails(freeIds)) {
-        const before = liveChannels.size;
-        addVideo(v);
-        if (liveChannels.size > before) auto.freeFound += 1;
-      }
-    }
+    const auto = { admin: false, reason: '', checked: 0, searched: 0, searchFound: 0, replaced: [], official: [] };
+    auto.checked = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId)).length;
 
     // 3) Con la llave de servicio: recordar vivos, buscar los que faltan y corregir canales equivocados
     const db = getAdminDb();
@@ -230,12 +232,41 @@ export default async function handler(req, res) {
       const used = bs.exists && bs.data().day === today ? bs.data().searches || 0 : 0;
       let left = Math.max(0, DAILY_SEARCH_LIMIT - used);
 
+      // 0) Alta automática de la lista oficial de señales 24 h (una sola vez por versión)
+      if ((bs.exists ? bs.data().officialVersion : 0) !== OFFICIAL_VERSION) {
+        for (const o of OFFICIAL_24H) {
+          try {
+            const ch = (await yt(`channels?part=snippet&forHandle=${encodeURIComponent(o.handle)}`)).items?.[0];
+            if (!ch) {
+              auto.official.push(`${o.handle}: no encontrado`);
+              continue;
+            }
+            await db.collection('catalog').doc(ch.id).set(
+              {
+                channelId: ch.id,
+                name: ch.snippet.title,
+                handle: ch.snippet.customUrl || o.handle,
+                logo: ch.snippet.thumbnails?.medium?.url || ch.snippet.thumbnails?.default?.url || '',
+                category: o.category,
+                always: true,
+                ...(byId[ch.id] ? {} : { priority: 0, addedAt: new Date() }),
+              },
+              { merge: true }
+            );
+            auto.official.push(`${ch.snippet.title}: ok`);
+          } catch (e) {
+            auto.official.push(`${o.handle}: ${e.message}`);
+          }
+        }
+        await budgetRef.set({ officialVersion: OFFICIAL_VERSION, officialLog: auto.official }, { merge: true });
+      }
+
       // a) búsqueda paga por canal (respaldo), con espera entre intentos
       const stillMissing = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId));
       const toSearch = stillMissing
-        .filter((c) => now - (c.liveCheckedAt || 0) > (c.liveVideoId ? 30 * 60000 : 12 * 3600e3))
+        .filter((c) => now - (c.liveCheckedAt || 0) > (c.liveVideoId ? 30 * 60000 : 6 * 3600e3))
         .sort((a, b) => (a.liveCheckedAt || 0) - (b.liveCheckedAt || 0))
-        .slice(0, Math.min(left, 2));
+        .slice(0, Math.min(left, 5));
       const searchIds = [];
       for (const c of toSearch) {
         try {
