@@ -8,6 +8,8 @@ import { SEED } from './seed';
 import { useRadar, itemKey, viewersText, updatedText } from './radar';
 import { personalRows, zapList, logMinute, addRecent } from './personal';
 import { searchLive } from './search';
+import { InstallCard, TvHelp } from './Install';
+import { shareApp } from './share';
 
 // Solo cambia lo que se muestra si el valor se mantiene un rato (evita parpadeos)
 function useSteady(value, ms) {
@@ -94,9 +96,11 @@ function Login() {
   };
   return (
     <Shell>
+      <InstallCard />
       <section className="card center">
-        <h1>Todo lo que está en vivo, en un solo lugar</h1>
-        <p className="muted">Entrá con tu cuenta de Google para empezar.</p>
+        <h1>El cable de los streamers</h1>
+        <p className="muted">Olga, Luzu, Bondi y más: solo lo que está en vivo, con zapping. En el celu o en la tele.</p>
+        <p className="muted small">Entrá con tu cuenta de Google para empezar.</p>
         <button className="btn primary big" onClick={login}>
           Entrar con Google
         </button>
@@ -107,7 +111,7 @@ function Login() {
 }
 
 // Emparejar una tele (ahora es opcional: la app funciona sola en el celu)
-function Pair({ user, lost, onClose }) {
+function Pair({ user, lost, onClose, onHelp }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(lost ? 'Tu tele se desvinculó. Emparejala de nuevo con el código que muestra.' : '');
@@ -137,7 +141,7 @@ function Pair({ user, lost, onClose }) {
     <section className="card center">
       <h2>Conectar una tele</h2>
       <p className="muted small">
-        En la tele (compu o Smart TV) abrí <strong>mi-tv-sand.vercel.app/tv</strong> y escribí acá el código que aparece.
+        En la tele (Smart TV o compu) abrí el navegador, escribí <strong>mitv.ar</strong> y poné acá el código que aparece.
       </p>
       <input
         className="code-input"
@@ -151,6 +155,11 @@ function Pair({ user, lost, onClose }) {
       <button className="btn primary big" onClick={pair} disabled={busy}>
         {busy ? 'Conectando…' : 'Conectar'}
       </button>
+      {onHelp && (
+        <button className="link" onClick={onHelp}>
+          ¿Cómo abro Mi TV en la tele?
+        </button>
+      )}
       {onClose && (
         <button className="link" onClick={onClose}>
           Ahora no
@@ -254,6 +263,7 @@ function Home({ user, profile, screen, screenLost }) {
   const [msg, setMsg] = useState('');
   const [tab, setTab] = useState('vivo');
   const [pairing, setPairing] = useState(false);
+  const [help, setHelp] = useState(false);
   const [phoneItem, setPhoneItem] = useState(null); // lo que se ve en el celu
   const [flying, setFlying] = useState(''); // animación: 'fly-up' (a la tele) o 'fly-in' (al celu)
   const isAdmin = !!ADMIN_EMAIL && (user.email || '').toLowerCase() === ADMIN_EMAIL;
@@ -414,7 +424,9 @@ function Home({ user, profile, screen, screenLost }) {
 
   return (
     <Shell right={tvChip}>
-      {(pairing || screenLost) && <Pair user={user} lost={screenLost} onClose={() => setPairing(false)} />}
+      <InstallCard dismissible />
+      {help && <TvHelp onClose={() => setHelp(false)} />}
+      {(pairing || screenLost) && <Pair user={user} lost={screenLost} onClose={() => setPairing(false)} onHelp={() => setHelp(true)} />}
 
       {phoneItem && (
         <PhonePlayer
@@ -590,6 +602,15 @@ function Home({ user, profile, screen, screenLost }) {
 
       {tab === 'prox' && <Upcoming items={radar?.upcoming || []} />}
       {tab === 'admin' && isAdmin && <Admin onPlay={pick} radar={radar} />}
+
+      <section className="share-row">
+        <button className="btn accent" onClick={shareApp}>
+          Compartir Mi TV
+        </button>
+        <button className="btn" onClick={() => setHelp(true)}>
+          ¿Cómo la veo en la tele?
+        </button>
+      </section>
 
       <footer className="ctl-foot">
         {paired ? (

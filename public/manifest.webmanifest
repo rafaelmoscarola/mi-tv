@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Mi TV",
+  "name": "Mi TV · El cable de los streamers",
   "short_name": "Mi TV",
-  "start_url": "/",
+  "start_url": "/app",
   "display": "standalone",
   "background_color": "#0E1320",
   "theme_color": "#0E1320",

@@ -1,8 +1,8 @@
 import Tv from './Tv.jsx';
 import Control from './Control.jsx';
+import { screenMode } from './device';
 
-// /tv = la pantalla grande (compu o Smart TV). Cualquier otra dirección = el control del celu.
+// mitv.ar se adapta solo: en el celu muestra la app; en un Smart TV o en la compu, la tele
 export default function App() {
-  const isTv = window.location.pathname.startsWith('/tv');
-  return isTv ? <Tv /> : <Control />;
+  return screenMode() === 'tv' ? <Tv /> : <Control />;
 }

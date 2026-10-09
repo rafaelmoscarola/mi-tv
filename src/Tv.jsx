@@ -553,7 +553,7 @@ export default function Tv() {
         <div className="tv-logo">
           Mi<span>TV</span>
         </div>
-        <p className="tv-lead">Abrí Mi TV en tu celular y escribí este código</p>
+        <p className="tv-lead">Abrí <strong>mitv.ar</strong> en tu celular, tocá "Conectar tele" y escribí este código</p>
         <div className="tv-code" aria-live="polite">
           {screen?.pairCode || '····'}
         </div>

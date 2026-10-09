@@ -2,9 +2,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './styles.css';
+import { screenMode } from './device';
 
 // La pantalla de la tele se instala como una app aparte del control del celu
-if (window.location.pathname.startsWith('/tv')) {
+if (screenMode() === 'tv') {
   const link = document.querySelector('link[rel="manifest"]');
   if (link) link.href = '/manifest-tv.webmanifest';
 }
