@@ -1,0 +1,23 @@
+// Orden de las filas en la grilla
+export const CATEGORIES = [
+  'Lo más visto',
+  'Noticias',
+  'Radios',
+  'Deportes',
+  'Música',
+  'Folclore',
+  'Humor y charla',
+  'Espectáculos',
+  'Autos',
+  'Campo',
+  'Gaming y streamers',
+  'Viajes',
+  'Ciudades en vivo',
+  'Paisajes y relax',
+  'Cocina',
+  'Hogar y obra',
+  'Salud',
+  'Fe',
+  'Regional',
+  'Infantil',
+];

@@ -1,0 +1,13 @@
+{
+  "id": "/tv",
+  "name": "Mi TV · Pantalla",
+  "short_name": "Mi TV",
+  "start_url": "/tv",
+  "scope": "/tv",
+  "display": "fullscreen",
+  "background_color": "#0E1320",
+  "theme_color": "#0E1320",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
