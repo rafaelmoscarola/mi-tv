@@ -214,3 +214,26 @@ select.field { appearance: auto; }
 .cat-chip.is-on { background: var(--text); color: var(--ground); border-color: var(--text); }
 .tv-card.is-off { opacity: 0.45; }
 .all-pill { background: var(--live); color: #fff; font-weight: 700; font-size: 1.8vh; padding: 0.6vh 1.4vh; border-radius: 1vh; }
+
+/* ---------- Tanda 3 ---------- */
+.nrow-title { display: flex; align-items: center; gap: 10px; font-size: 20px !important; font-weight: 800; margin: 0 0 10px !important; padding-left: 10px; border-left: 4px solid var(--live); line-height: 1.1; }
+.nrow-count { font-family: var(--body); font-size: 13px; font-weight: 700; color: var(--muted); background: var(--surface); border-radius: 999px; padding: 2px 8px; }
+.muted-title { border-left-color: var(--surface-2); color: var(--muted); font-size: 16px !important; margin-top: 10px !important; }
+.live-rows { gap: 26px; }
+.search-box { display: flex; gap: 8px; align-items: center; }
+.field.search { flex: 1; border-radius: 999px; padding: 12px 18px; background: var(--surface); border-color: var(--surface); }
+.search-results { display: flex; flex-direction: column; gap: 8px; }
+.live-item.is-off { opacity: 0.55; }
+.round-logo { width: 48px !important; height: 48px; border-radius: 50% !important; aspect-ratio: 1 / 1 !important; }
+.ctl-group { display: flex; flex-direction: column; gap: 6px; background: var(--surface); border-radius: 16px; padding: 10px; }
+.ctl-label { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding-left: 2px; }
+.ctl-group .pad { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ctl-group .btn { background: var(--surface-2); }
+.ctl-group .btn.primary { background: var(--text); color: var(--ground); }
+.btn.is-muted { background: #3a2a14 !important; color: #ffd27a; }
+.btn.accent { background: var(--live); color: #fff; }
+.ctl-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; }
+.btn.small { min-height: 44px; font-size: 14px; padding: 0 16px; }
+.sig { font-size: 12px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.sig.on { color: var(--ok); }
+.sig.off { color: var(--muted); max-width: 120px; white-space: normal; text-align: right; }

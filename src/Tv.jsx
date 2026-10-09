@@ -115,6 +115,7 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
   const loadedRef = useRef('');
   const checkSoundRef = useRef(null);
   const jumpRef = useRef({ key: '', last: 0, tries: 0 });
+  const kickRef = useRef(null);
   itemRef.current = item;
 
   useEffect(() => {
@@ -157,6 +158,22 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
     };
     checkSoundRef.current = checkSound;
 
+    // Empujón: si a los 2 segundos el video sigue en pausa, le da play solo (hasta 3 intentos)
+    const kick = (p, n = 0) => {
+      setTimeout(() => {
+        try {
+          if (cancelled || !playerRef.current) return;
+          const st = p.getPlayerState?.();
+          if (st === 2 || st === 5 || st === -1) {
+            if (soundStateRef.current === 'blocked') p.mute();
+            p.playVideo();
+            if (n < 2) kick(p, n + 1);
+          }
+        } catch {}
+      }, 2000);
+    };
+    kickRef.current = kick;
+
     loadYouTubeApi().then((YT) => {
       if (cancelled || !hostRef.current) return;
       const target = document.createElement('div');
@@ -182,6 +199,7 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
             e.target.unMute();
             e.target.playVideo();
             checkSound(e.target);
+            kick(e.target);
             // Si mientras cargaba se eligió otro canal, lo carga ahora
             const cur = itemRef.current;
             const key = `${cur.kind}:${cur.id}`;
@@ -260,6 +278,7 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
     try {
       p.loadVideoById(item.id);
       checkSoundRef.current?.(p);
+      kickRef.current?.(p);
     } catch {}
   }, [item.kind, item.id]);
 

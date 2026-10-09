@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
 import { parseYouTube, embedUrl } from './youtube';
 import { CATEGORIES } from './categories';
 import { SEED } from './seed';
 import { useRadar, itemKey, viewersText, updatedText } from './radar';
 import { personalRows, zapList, logMinute, addRecent } from './personal';
+import { searchLive } from './search';
 
 // Solo cambia lo que se muestra si el valor se mantiene un rato (evita parpadeos)
 function useSteady(value, ms) {
@@ -38,8 +39,16 @@ export default function Control() {
   useEffect(() => {
     if (!user) return;
     const ref = doc(db, 'users', user.uid);
-    setDoc(ref, { name: user.displayName || '', email: user.email || '', lastSeen: serverTimestamp() }, { merge: true });
-    return onSnapshot(ref, (s) => setProfile(s.data() || {}));
+    let ready = false;
+    // Espera el perfil completo del servidor antes de mostrar nada (evita el "pestañazo" de categorías)
+    return onSnapshot(ref, { includeMetadataChanges: true }, (s) => {
+      if (!ready && s.metadata.fromCache) return;
+      if (!ready) {
+        ready = true;
+        setDoc(ref, { name: user.displayName || '', email: user.email || '', lastSeen: serverTimestamp() }, { merge: true });
+      }
+      setProfile(s.data() || {});
+    });
   }, [user]);
 
   useEffect(() => {
@@ -183,7 +192,9 @@ function PhonePlayer({ item, flying, onToTv, canTv, onClose, isFav, onFav }) {
 function Row({ title, items, onPick, activeKey, favorites, onFav }) {
   return (
     <section className="nrow">
-      <h2>{title}</h2>
+      <h2 className="nrow-title">
+        {title} <span className="nrow-count">{items.length}</span>
+      </h2>
       <div className="nrow-cards">
         {items.map((it) => {
           const fav = favorites.includes(it.channelId);
@@ -259,6 +270,17 @@ function Home({ user, profile, screen, screenLost }) {
     setEditingCats(false);
   };
   const needsCats = profile.categories === undefined;
+
+  // Buscador: canales, programas, periodistas y categorías
+  const [query, setQuery] = useState('');
+  const [catalogAll, setCatalogAll] = useState(null);
+  useEffect(() => {
+    if (query.trim().length < 2 || catalogAll) return;
+    getDocs(collection(db, 'catalog'))
+      .then((snap) => setCatalogAll(snap.docs.map((d) => d.data())))
+      .catch(() => setCatalogAll([]));
+  }, [query, catalogAll]);
+  const results = useMemo(() => searchLive(query, radar?.live, catalogAll), [query, radar, catalogAll]);
   const paired = !!profile.screenId && !!screen;
   const screenRef = profile.screenId ? doc(db, 'screens', profile.screenId) : null;
   const tvActive = paired && !phoneItem && (screen?.mode === 'play' || screen?.mode === 'peek');
@@ -309,6 +331,7 @@ function Home({ user, profile, screen, screenLost }) {
     : '';
 
   const localCursor = useRef(null);
+  const [muted, setMuted] = useState(false);
 
   const phoneId = phoneItem?.channelId || '';
   useEffect(() => {
@@ -350,7 +373,7 @@ function Home({ user, profile, screen, screenLost }) {
     }, 550);
   };
 
-  // "Traer al celu": la tele vuelve a la grilla y el video baja volando al celu
+  // "Ver en el celu": la tele vuelve a la grilla y el video baja volando al celu
   const toPhone = () => {
     const item = screen?.current || screen?.cursor;
     if (!item) return;
@@ -425,19 +448,38 @@ function Home({ user, profile, screen, screenLost }) {
             )}
           </div>
           {notice && <p className="notice">{notice}</p>}
-          <section className="pad zap">
-            <button className="btn" onClick={() => zap(-1)}>Canal −</button>
-            <button className="btn primary" onClick={ok}>OK</button>
-            <button className="btn" onClick={() => zap(1)}>Canal +</button>
-          </section>
-          <section className="pad">
-            <button className="btn" onClick={() => cmd('volDown')}>Vol −</button>
-            <button className="btn" onClick={() => cmd('mute')}>Silencio</button>
-            <button className="btn" onClick={() => cmd('volUp')}>Vol +</button>
-            <button className="btn" onClick={() => write({ mode: 'home' })}>Inicio</button>
-            <button className="btn" onClick={toPhone}>Traer al celu</button>
-            <button className="btn danger" onClick={() => write({ mode: 'off' })}>Apagar</button>
-          </section>
+
+          <div className="ctl-group">
+            <span className="ctl-label">Canales</span>
+            <div className="pad zap">
+              <button className="btn" onClick={() => zap(-1)}>Canal −</button>
+              <button className="btn primary" onClick={ok}>OK</button>
+              <button className="btn" onClick={() => zap(1)}>Canal +</button>
+            </div>
+          </div>
+
+          <div className="ctl-group">
+            <span className="ctl-label">Volumen</span>
+            <div className="pad">
+              <button className="btn" onClick={() => cmd('volDown')}>Vol −</button>
+              <button
+                className={`btn ${muted ? 'is-muted' : ''}`}
+                onClick={() => {
+                  cmd(muted ? 'unmute' : 'mute');
+                  setMuted(!muted);
+                }}
+              >
+                {muted ? 'Con sonido' : 'Silencio'}
+              </button>
+              <button className="btn" onClick={() => cmd('volUp')}>Vol +</button>
+            </div>
+          </div>
+
+          <button className="btn accent big" onClick={toPhone}>Ver en el celu</button>
+          <div className="ctl-actions">
+            <button className="btn small" onClick={() => write({ mode: 'home' })}>Inicio</button>
+            <button className="btn small danger" onClick={() => write({ mode: 'off' })}>Apagar tele</button>
+          </div>
         </section>
       )}
 
@@ -463,6 +505,60 @@ function Home({ user, profile, screen, screenLost }) {
       )}
 
       {tab === 'vivo' && !needsCats && !editingCats && (
+        <div className="search-box">
+          <input
+            className="field search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar canal, programa o periodista"
+            aria-label="Buscar"
+          />
+          {query && (
+            <button className="icon-btn" onClick={() => setQuery('')} aria-label="Borrar búsqueda">
+              ×
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab === 'vivo' && !needsCats && !editingCats && query.trim().length >= 2 && (
+        <section className="search-results">
+          <h2 className="nrow-title">
+            En vivo ahora <span className="nrow-count">{results.live.length}</span>
+          </h2>
+          {!results.live.length && <p className="muted">Nada en vivo que coincida con "{query}".</p>}
+          {results.live.map((it) => (
+            <button key={itemKey(it)} className="live-item" onClick={() => pick(it)}>
+              {it.thumb ? <img src={it.thumb} alt="" /> : <span className="thumb-ph" />}
+              <span className="live-text">
+                <strong>{it.channel}</strong>
+                <span>{it.title}</span>
+                <small>
+                  {it.category}
+                  {it.viewers ? ` · ${viewersText(it.viewers)}` : ''}
+                </small>
+              </span>
+            </button>
+          ))}
+          {results.offline.length > 0 && (
+            <>
+              <h2 className="nrow-title muted-title">También en tu catálogo (no en vivo ahora)</h2>
+              {results.offline.map((c) => (
+                <div key={c.channelId} className="live-item static is-off">
+                  {c.logo ? <img src={c.logo} alt="" className="round-logo" /> : <span className="thumb-ph round" />}
+                  <span className="live-text">
+                    <strong>{c.name}</strong>
+                    <small>{c.category}</small>
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </section>
+      )}
+
+      {tab === 'vivo' && !needsCats && !editingCats && query.trim().length < 2 && (
         <section className="live-rows">
           <div className="cats-bar">
             <button className={`all-btn ${showAll ? 'is-on' : ''}`} onClick={toggleAll}>
@@ -493,7 +589,7 @@ function Home({ user, profile, screen, screenLost }) {
       )}
 
       {tab === 'prox' && <Upcoming items={radar?.upcoming || []} />}
-      {tab === 'admin' && isAdmin && <Admin onPlay={pick} />}
+      {tab === 'admin' && isAdmin && <Admin onPlay={pick} radar={radar} />}
 
       <footer className="ctl-foot">
         {paired ? (
@@ -541,7 +637,7 @@ function Upcoming({ items }) {
 }
 
 // Panel de administrador: cargar, cambiar de categoría y quitar canales
-function Admin({ onPlay }) {
+function Admin({ onPlay, radar }) {
   const [catalog, setCatalog] = useState([]);
   const [links, setLinks] = useState('');
   const [category, setCategory] = useState(CATEGORIES[0]);
@@ -622,6 +718,8 @@ function Admin({ onPlay }) {
           ))}
         </ul>
       )}
+
+      <Signals24 catalog={catalog} radar={radar} />
 
       <Seed catalog={catalog} />
 
@@ -748,6 +846,46 @@ function Seed({ catalog }) {
             <button className="link" onClick={() => reject(r)}>
               {r.ch && !r.already ? 'No' : 'Listo'}
             </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+// Estado de las señales 24 horas (solo informativo: el radar trabaja solo)
+function Signals24({ catalog, radar }) {
+  const liveIds = new Set((radar?.live || []).map((i) => i.channelId));
+  const list = catalog.filter((c) => c.always || c.category === 'Noticias' || c.category === 'Radios');
+  if (!list.length) return null;
+  const on = list.filter((c) => liveIds.has(c.channelId)).length;
+  const ago = (ms) => {
+    if (!ms) return 'todavía no se lo vio en vivo';
+    const h = Math.round((Date.now() - ms) / 3600e3);
+    return h < 1 ? 'en vivo hace menos de 1 h' : `visto en vivo hace ${h} h`;
+  };
+  return (
+    <>
+      <h2>Señales 24 horas</h2>
+      <p className="muted small">
+        {on} de {list.length} en vivo ahora. El radar las revisa solo en cada pasada
+        {radar?.auto && !radar.auto.admin ? ` (aviso: ${radar.auto.reason})` : ''}.
+      </p>
+      {radar?.auto?.replaced?.length > 0 && <p className="notice">Corregido automáticamente: {radar.auto.replaced.join(', ')}</p>}
+      <ul className="catalog">
+        {list.map((c) => (
+          <li key={c.channelId}>
+            {c.logo ? <img src={c.logo} alt="" /> : <span className="thumb-ph round" />}
+            <span className="cat-text">
+              <strong>{c.name}</strong>
+              <small className="muted">
+                {c.category}
+                {c.replacedFrom ? ` · reemplazó a "${c.replacedFrom}"` : ''}
+              </small>
+            </span>
+            <span className={`sig ${liveIds.has(c.channelId) ? 'on' : 'off'}`}>
+              {liveIds.has(c.channelId) ? 'En vivo' : ago(c.lastLiveAt)}
+            </span>
           </li>
         ))}
       </ul>

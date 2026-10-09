@@ -9,18 +9,22 @@ const KEY = process.env.YOUTUBE_API_KEY;
 
 // Señales 24 horas: en estas categorías el radar busca solo el vivo si no lo encuentra
 const AUTO_24H = new Set(['Noticias', 'Radios']);
-const DAILY_SEARCH_LIMIT = 30; // tope de búsquedas especiales por día (100 fichas cada una)
+const DAILY_SEARCH_LIMIT = 30; // tope de búsquedas pagas por día (100 fichas cada una)
 
 let adminDb = null;
+let adminError = '';
 function getAdminDb() {
   if (adminDb !== null) return adminDb;
   try {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!raw) return (adminDb = false);
+    if (!raw) {
+      adminError = 'Falta FIREBASE_SERVICE_ACCOUNT en Vercel';
+      return (adminDb = false);
+    }
     const app = getApps()[0] || initializeApp({ credential: cert(JSON.parse(raw)) });
     adminDb = getFirestore(app);
   } catch (e) {
-    console.error('Llave de servicio inválida', e);
+    adminError = `Llave de servicio inválida: ${e.message}`;
     adminDb = false;
   }
   return adminDb;
@@ -47,12 +51,16 @@ async function readCatalog() {
       out.push({
         channelId: field(f, 'channelId'),
         name: field(f, 'name') || '',
+        handle: field(f, 'handle') || '',
         logo: field(f, 'logo') || '',
         category: field(f, 'category') || 'Otros',
         priority: Number(field(f, 'priority') || 0),
         always: field(f, 'always') === true,
         liveVideoId: field(f, 'liveVideoId') || '',
         liveCheckedAt: Number(field(f, 'liveCheckedAt') || 0),
+        lastLiveAt: Number(field(f, 'lastLiveAt') || 0),
+        addedMs: Date.parse(d.createTime || '') || 0,
+        fixCheckedAt: Number(field(f, 'fixCheckedAt') || 0),
       });
     }
     pageToken = j.nextPageToken || '';
@@ -72,6 +80,20 @@ async function recentIds(channelId) {
   }
 }
 
+// Pregunta gratis por la dirección del vivo del canal (servicio público oEmbed de YouTube)
+async function liveViaOembed(channelId) {
+  try {
+    const target = encodeURIComponent(`https://www.youtube.com/channel/${channelId}/live`);
+    const r = await fetch(`https://www.youtube.com/oembed?url=${target}&format=json`);
+    if (!r.ok) return '';
+    const j = await r.json();
+    const m = String(j.html || '').match(/embed\/([\w-]{11})/);
+    return m ? m[1] : '';
+  } catch {
+    return '';
+  }
+}
+
 async function pool(items, size, fn) {
   const results = new Array(items.length);
   let i = 0;
@@ -86,125 +108,211 @@ async function pool(items, size, fn) {
   return results;
 }
 
-// Le pregunta a YouTube el estado de hasta 50 videos por pedido (1 ficha cada 50)
+async function yt(path) {
+  const r = await fetch(`https://www.googleapis.com/youtube/v3/${path}&key=${KEY}`);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j;
+}
+
+// Estado de hasta 50 videos por pedido (1 ficha cada 50)
 async function videoDetails(ids) {
   const out = [];
   for (let i = 0; i < ids.length; i += 50) {
-    const chunk = ids.slice(i, i + 50);
-    const r = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?part=snippet,liveStreamingDetails&id=${chunk.join(',')}&key=${KEY}`
-    );
-    const j = await r.json();
-    if (j.error) throw new Error(j.error.message);
+    const j = await yt(`videos?part=snippet,liveStreamingDetails&id=${ids.slice(i, i + 50).join(',')}`);
     out.push(...(j.items || []));
   }
   return out;
 }
 
+const norm = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+function isLive(v) {
+  return v?.snippet?.liveBroadcastContent === 'live' && !v.liveStreamingDetails?.actualEndTime;
+}
+
+function toItem(v, c) {
+  const d = v.liveStreamingDetails || {};
+  const state = v.snippet.liveBroadcastContent;
+  return {
+    kind: 'video',
+    id: v.id,
+    channelId: c.channelId,
+    channel: c.name || v.snippet.channelTitle,
+    logo: c.logo,
+    category: c.category,
+    priority: c.priority,
+    title: v.snippet.title,
+    desc: String(v.snippet.description || '').slice(0, 400),
+    thumb: `https://i.ytimg.com/vi/${v.id}/hqdefault${state === 'live' ? '_live' : ''}.jpg`,
+    live: state === 'live',
+    viewers: Number(d.concurrentViewers || 0),
+    startedAt: d.actualStartTime || null,
+    scheduledAt: d.scheduledStartTime || null,
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (!KEY) throw new Error('Falta la variable YOUTUBE_API_KEY en Vercel');
+    const now = Date.now();
     const catalog = await readCatalog();
     const byId = Object.fromEntries(catalog.map((c) => [c.channelId, c]));
+    const is24 = (c) => c.always || AUTO_24H.has(c.category);
+
+    // 1) Videos recientes de cada canal + vivos recordados
     const lists = await pool(catalog, 20, (c) => recentIds(c.channelId));
     const remembered = catalog.map((c) => c.liveVideoId).filter(Boolean);
+    let videos = [];
     const ids = [...new Set([...lists.flat(), ...remembered])];
-    const videos = ids.length ? await videoDetails(ids) : [];
+    if (ids.length) videos = await videoDetails(ids);
 
-    const now = Date.now();
     const live = [];
     const upcoming = [];
     const liveChannels = new Set();
-
-    for (const v of videos) {
+    const liveVideoOf = {};
+    const addVideo = (v) => {
       const c = byId[v.snippet?.channelId];
-      if (!c) continue;
-      const d = v.liveStreamingDetails || {};
-      const state = v.snippet.liveBroadcastContent;
-      const base = {
-        kind: 'video',
-        id: v.id,
-        channelId: c.channelId,
-        channel: c.name || v.snippet.channelTitle,
-        logo: c.logo,
-        category: c.category,
-        priority: c.priority,
-        title: v.snippet.title,
-        thumb: `https://i.ytimg.com/vi/${v.id}/hqdefault${state === 'live' ? '_live' : ''}.jpg`,
-      };
-      if (state === 'live' && !d.actualEndTime) {
-        live.push({ ...base, live: true, viewers: Number(d.concurrentViewers || 0), startedAt: d.actualStartTime || null });
+      if (!c) return;
+      if (isLive(v)) {
+        if (liveChannels.has(c.channelId) && live.some((x) => x.id === v.id)) return;
+        live.push(toItem(v, c));
         liveChannels.add(c.channelId);
-      } else if (state === 'upcoming' && d.scheduledStartTime) {
-        const t = Date.parse(d.scheduledStartTime);
+        liveVideoOf[c.channelId] ||= v.id;
+      } else if (v.snippet.liveBroadcastContent === 'upcoming' && v.liveStreamingDetails?.scheduledStartTime) {
+        const t = Date.parse(v.liveStreamingDetails.scheduledStartTime);
         // descarta "salas de espera" que nunca arrancan
-        if (t > now - 2 * 3600e3 && t < now + 7 * 86400e3) upcoming.push({ ...base, scheduledAt: d.scheduledStartTime });
+        if (t > now - 2 * 3600e3 && t < now + 7 * 86400e3 && !upcoming.some((x) => x.id === v.id)) upcoming.push(toItem(v, c));
+      }
+    };
+    videos.forEach(addVideo);
+
+    // 2) Señales 24 h sin vivo: pregunta gratis por la dirección /live de cada canal
+    const auto = { admin: false, reason: '', checked: 0, freeFound: 0, searched: 0, searchFound: 0, replaced: [] };
+    const missing = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId));
+    auto.checked = missing.length;
+    const oembedIds = await pool(missing, 10, (c) => liveViaOembed(c.channelId));
+    const freeIds = [...new Set(oembedIds.filter(Boolean))];
+    if (freeIds.length) {
+      for (const v of await videoDetails(freeIds)) {
+        const before = liveChannels.size;
+        addVideo(v);
+        if (liveChannels.size > before) auto.freeFound += 1;
       }
     }
 
-    // Señales 24 horas sin vivo detectado: búsqueda especial (con tope diario) y el radar la recuerda
-    const auto = { searched: 0, found: 0 };
+    // 3) Con la llave de servicio: recordar vivos, buscar los que faltan y corregir canales equivocados
     const db = getAdminDb();
+    auto.admin = !!db;
+    auto.reason = db ? '' : adminError;
     if (db) {
-      const now2 = Date.now();
+      const updates = {};
+      const touch = (id, data) => (updates[id] = { ...(updates[id] || {}), ...data });
+
+      // recordar el vivo de cada señal 24 h y cuándo se la vio en vivo por última vez
+      for (const c of catalog.filter(is24)) {
+        const vid = liveVideoOf[c.channelId];
+        if (vid) {
+          if (vid !== c.liveVideoId) touch(c.channelId, { liveVideoId: vid });
+          if (now - c.lastLiveAt > 3600e3) touch(c.channelId, { lastLiveAt: now });
+        }
+      }
+
       const today = new Date().toISOString().slice(0, 10);
       const budgetRef = db.collection('config').doc('radar');
-      const budgetSnap = await budgetRef.get();
-      const budget = budgetSnap.exists && budgetSnap.data().day === today ? budgetSnap.data().searches || 0 : 0;
-      let left = Math.max(0, DAILY_SEARCH_LIMIT - budget);
-      const candidates = catalog
-        .filter((c) => (c.always || AUTO_24H.has(c.category)) && !liveChannels.has(c.channelId))
-        .filter((c) => {
-          const age = now2 - (c.liveCheckedAt || 0);
-          // si tenía un vivo recordado que terminó, vuelve a buscar a los 30 min; si no, cada 12 h
-          return c.liveVideoId ? age > 30 * 60000 : age > 12 * 3600000;
-        })
+      const bs = await budgetRef.get();
+      const used = bs.exists && bs.data().day === today ? bs.data().searches || 0 : 0;
+      let left = Math.max(0, DAILY_SEARCH_LIMIT - used);
+
+      // a) búsqueda paga por canal (respaldo), con espera entre intentos
+      const stillMissing = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId));
+      const toSearch = stillMissing
+        .filter((c) => now - (c.liveCheckedAt || 0) > (c.liveVideoId ? 30 * 60000 : 12 * 3600e3))
         .sort((a, b) => (a.liveCheckedAt || 0) - (b.liveCheckedAt || 0))
-        .slice(0, Math.min(left, 3));
-      const foundIds = [];
-      for (const c of candidates) {
+        .slice(0, Math.min(left, 2));
+      const searchIds = [];
+      for (const c of toSearch) {
         try {
-          const r = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${c.channelId}&eventType=live&type=video&maxResults=1&key=${KEY}`
-          );
-          const j = await r.json();
-          if (j.error) throw new Error(j.error.message);
+          const j = await yt(`search?part=id&channelId=${c.channelId}&eventType=live&type=video&maxResults=1`);
+          left -= 1;
           auto.searched += 1;
           const vid = j.items?.[0]?.id?.videoId || '';
-          await db.collection('catalog').doc(c.channelId).set({ liveVideoId: vid, liveCheckedAt: now2 }, { merge: true });
-          if (vid) foundIds.push(vid);
+          touch(c.channelId, { liveCheckedAt: now, ...(vid ? { liveVideoId: vid } : {}) });
+          if (vid) searchIds.push(vid);
         } catch (e) {
-          console.error('Búsqueda de vivo', c.name, e.message);
+          auto.reason = `Búsqueda: ${e.message}`;
           break;
         }
       }
-      if (auto.searched) await budgetRef.set({ day: today, searches: budget + auto.searched }, { merge: true });
-      if (foundIds.length) {
-        for (const v of await videoDetails(foundIds)) {
-          const c = byId[v.snippet?.channelId];
-          const d = v.liveStreamingDetails || {};
-          if (!c || v.snippet.liveBroadcastContent !== 'live' || d.actualEndTime) continue;
-          auto.found += 1;
-          live.push({
-            kind: 'video',
-            id: v.id,
-            channelId: c.channelId,
-            channel: c.name || v.snippet.channelTitle,
-            logo: c.logo,
-            category: c.category,
-            priority: c.priority,
-            title: v.snippet.title,
-            thumb: `https://i.ytimg.com/vi/${v.id}/hqdefault_live.jpg`,
-            live: true,
-            viewers: Number(d.concurrentViewers || 0),
-            startedAt: d.actualStartTime || null,
-          });
-          liveChannels.add(c.channelId);
+      if (searchIds.length) {
+        for (const v of await videoDetails(searchIds)) {
+          const before = liveChannels.size;
+          addVideo(v);
+          if (liveChannels.size > before) auto.searchFound += 1;
         }
+      }
+
+      // b) canal equivocado: si en 24 h nunca se lo vio en vivo, busca el vivo por nombre y lo reemplaza
+      const suspects = catalog
+        .filter((c) => is24(c) && !liveChannels.has(c.channelId))
+        .filter((c) => now - Math.max(c.lastLiveAt || 0, c.addedMs || 0) > 24 * 3600e3)
+        .filter((c) => now - (c.fixCheckedAt || 0) > 24 * 3600e3)
+        .slice(0, Math.min(left, 1));
+      for (const c of suspects) {
+        try {
+          const j = await yt(
+            `search?part=snippet&q=${encodeURIComponent(c.name)}&eventType=live&type=video&regionCode=AR&relevanceLanguage=es&maxResults=5`
+          );
+          left -= 1;
+          auto.searched += 1;
+          touch(c.channelId, { fixCheckedAt: now });
+          const target = norm(c.name);
+          const hit = (j.items || []).find((it) => {
+            const t = norm(it.snippet?.channelTitle);
+            return it.snippet?.channelId !== c.channelId && t && (t.includes(target) || target.includes(t));
+          });
+          if (hit && !byId[hit.snippet.channelId]) {
+            const ch = (await yt(`channels?part=snippet&id=${hit.snippet.channelId}`)).items?.[0];
+            if (ch) {
+              await db.collection('catalog').doc(ch.id).set({
+                channelId: ch.id,
+                name: ch.snippet.title,
+                handle: ch.snippet.customUrl || '',
+                logo: ch.snippet.thumbnails?.medium?.url || ch.snippet.thumbnails?.default?.url || '',
+                category: c.category,
+                priority: c.priority || 0,
+                always: c.always || false,
+                liveVideoId: hit.id.videoId,
+                lastLiveAt: now,
+                replacedFrom: c.name,
+                addedAt: new Date(),
+              });
+              await db.collection('catalog').doc(c.channelId).delete();
+              delete updates[c.channelId];
+              auto.replaced.push(`${c.name} → ${ch.snippet.title}`);
+            }
+          }
+        } catch (e) {
+          auto.reason = `Corrección: ${e.message}`;
+          break;
+        }
+      }
+
+      const writes = Object.entries(updates);
+      await Promise.all(writes.map(([id, data]) => db.collection('catalog').doc(id).set(data, { merge: true })));
+      if (auto.searched) {
+        const log = bs.exists && bs.data().day === today ? bs.data().replaced || [] : [];
+        await budgetRef.set({ day: today, searches: used + auto.searched, replaced: [...log, ...auto.replaced].slice(-20) }, { merge: true });
       }
     }
 
-    // Canales marcados "24 horas" (noticias, cámaras): se muestran aunque su vivo sea viejo
+    // 4) Canales marcados "24 horas" a mano que igual no se encontraron: se muestran con el vivo del canal
     for (const c of catalog) {
       if (c.always && !liveChannels.has(c.channelId)) {
         live.push({
@@ -216,6 +324,7 @@ export default async function handler(req, res) {
           category: c.category,
           priority: c.priority,
           title: 'En vivo las 24 horas',
+          desc: '',
           thumb: c.logo,
           live: true,
           always: true,
