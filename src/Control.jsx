@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider } from './firebase';
@@ -604,7 +604,11 @@ function Home({ user, profile, screen, screenLost }) {
       )}
 
       {tab === 'prox' && <Upcoming items={radar?.upcoming || []} />}
-      {tab === 'admin' && isAdmin && <Admin onPlay={pick} radar={radar} />}
+      {tab === 'admin' && isAdmin && (
+        <SafeBox>
+          <Admin onPlay={pick} radar={radar} />
+        </SafeBox>
+      )}
 
       <section className="share-row">
         <button className="btn accent" onClick={shareApp}>
@@ -679,7 +683,12 @@ function Admin({ onPlay, radar }) {
   useEffect(
     () =>
       onSnapshot(collection(db, 'catalog'), (snap) =>
-        setCatalog(snap.docs.map((d) => d.data()).sort((a, b) => (a.category + a.name).localeCompare(b.category + b.name)))
+        setCatalog(
+          snap.docs
+            .map((d) => d.data())
+            .filter((c) => c && c.channelId && c.name) // ignora documentos incompletos
+            .sort((a, b) => `${a.category || ''} ${a.name || ''}`.localeCompare(`${b.category || ''} ${b.name || ''}`))
+        )
       ),
     []
   );
@@ -959,4 +968,27 @@ function PasteLive({ channel }) {
       {msg && <small className="muted">{msg}</small>}
     </div>
   );
+}
+
+// Si una sección falla, muestra un aviso en lugar de dejar la pantalla en blanco
+class SafeBox extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error)
+      return (
+        <section className="card">
+          <p className="error">Esta sección tuvo un problema: {String(this.state.error.message || this.state.error)}</p>
+          <button className="btn" onClick={() => this.setState({ error: null })}>
+            Reintentar
+          </button>
+        </section>
+      );
+    return this.props.children;
+  }
 }

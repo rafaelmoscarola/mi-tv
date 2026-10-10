@@ -49,8 +49,10 @@ function field(f, k) {
   return v.stringValue ?? v.integerValue ?? v.doubleValue ?? v.booleanValue;
 }
 
+let ghostIds = [];
 async function readCatalog() {
   const out = [];
+  ghostIds = [];
   let pageToken = '';
   do {
     const url = `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/catalog?pageSize=300${
@@ -61,6 +63,10 @@ async function readCatalog() {
     const j = await r.json();
     for (const d of j.documents || []) {
       const f = d.fields || {};
+      if (!field(f, 'channelId') || !field(f, 'name')) {
+        ghostIds.push(d.name.split('/').pop());
+        continue;
+      }
       out.push({
         channelId: field(f, 'channelId'),
         name: field(f, 'name') || '',
@@ -337,7 +343,13 @@ export default async function handler(req, res) {
       }
 
       const writes = Object.entries(updates);
-      await Promise.all(writes.map(([id, data]) => db.collection('catalog').doc(id).set(data, { merge: true })));
+      // update() falla si el canal ya no existe: así nunca se vuelve a crear un canal que quitaste
+      await Promise.all(writes.map(([id, data]) => db.collection('catalog').doc(id).update(data).catch(() => {})));
+      // limpieza de documentos vacíos que hayan quedado de versiones anteriores
+      if (ghostIds.length) {
+        await Promise.all(ghostIds.map((id) => db.collection('catalog').doc(id).delete().catch(() => {})));
+        auto.cleaned = ghostIds.length;
+      }
       if (auto.searched) {
         const log = bs.exists && bs.data().day === today ? bs.data().replaced || [] : [];
         await budgetRef.set({ day: today, searches: used + auto.searched, replaced: [...log, ...auto.replaced].slice(-20) }, { merge: true });
