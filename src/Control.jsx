@@ -886,6 +886,7 @@ function Seed({ catalog }) {
 // Estado de las señales 24 horas (solo informativo: el radar trabaja solo)
 function Signals24({ catalog, radar }) {
   const liveIds = new Set((radar?.live || []).map((i) => i.channelId));
+  const blockedIds = new Set((radar?.auto?.blocked || []).map((b) => b.channelId));
   const list = catalog.filter((c) => c.always || c.category === 'Noticias' || c.category === 'Radios');
   if (!list.length) return null;
   const on = list.filter((c) => liveIds.has(c.channelId)).length;
@@ -918,12 +919,44 @@ function Signals24({ catalog, radar }) {
                 {c.replacedFrom ? ` · reemplazó a "${c.replacedFrom}"` : ''}
               </small>
             </span>
-            <span className={`sig ${liveIds.has(c.channelId) ? 'on' : 'off'}`}>
-              {liveIds.has(c.channelId) ? 'En vivo' : ago(c.lastLiveAt)}
+            <span className={`sig ${liveIds.has(c.channelId) ? 'on' : blockedIds.has(c.channelId) ? 'bad' : 'off'}`}>
+              {liveIds.has(c.channelId) ? 'En vivo' : blockedIds.has(c.channelId) ? 'Bloqueado fuera de YouTube' : ago(c.lastLiveAt)}
             </span>
+            {!liveIds.has(c.channelId) && !blockedIds.has(c.channelId) && <PasteLive channel={c} />}
           </li>
         ))}
       </ul>
     </>
+  );
+}
+
+// Pegar una sola vez el link del vivo de una señal 24 h: el radar lo verifica y lo recuerda
+function PasteLive({ channel }) {
+  const [open, setOpen] = useState(false);
+  const [link, setLink] = useState('');
+  const [msg, setMsg] = useState('');
+  const save = async () => {
+    const it = parseYouTube(link);
+    if (!it || it.kind !== 'video') return setMsg('Pegá el link del vivo (el que copiás con Compartir en el vivo).');
+    await updateDoc(doc(db, 'catalog', channel.channelId), { liveVideoId: it.id, liveCheckedAt: Date.now() }).catch(() =>
+      setMsg('No se pudo guardar.')
+    );
+    setMsg('Guardado. En unos minutos el radar lo verifica.');
+    setLink('');
+  };
+  if (!open)
+    return (
+      <button className="link small-link" onClick={() => setOpen(true)}>
+        Pegar link del vivo
+      </button>
+    );
+  return (
+    <div className="paste-live">
+      <input className="field" value={link} onChange={(e) => setLink(e.target.value)} placeholder={`Link del vivo de ${channel.name}`} />
+      <button className="btn small" onClick={save}>
+        Guardar
+      </button>
+      {msg && <small className="muted">{msg}</small>}
+    </div>
   );
 }

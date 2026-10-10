@@ -349,7 +349,9 @@ export default async function handler(req, res) {
     auto.waiting = catalog.filter((c) => is24(c) && !liveChannels.has(c.channelId)).map((c) => c.name);
 
     // Los vivos que no se pueden ver fuera de YouTube se sacan de la grilla (y se informan aparte)
-    const blocked = live.filter((i) => i.embeddable === false).map((i) => ({ channelId: i.channelId, channel: i.channel }));
+    const blocked = [
+      ...new Map(live.filter((i) => i.embeddable === false).map((i) => [i.channelId, { channelId: i.channelId, channel: i.channel }])).values(),
+    ];
     for (let i = live.length - 1; i >= 0; i--) if (live[i].embeddable === false) live.splice(i, 1);
     for (let i = upcoming.length - 1; i >= 0; i--) if (upcoming[i].embeddable === false) upcoming.splice(i, 1);
     auto.blocked = blocked;
