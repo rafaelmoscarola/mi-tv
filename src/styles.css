@@ -263,3 +263,6 @@ div.help-steps { padding-left: 0; }
 .paste-live { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .paste-live .field { flex: 1; min-width: 160px; padding: 10px; }
 .small-link { font-size: 13px; padding: 4px; }
+
+.tiny-check { font-size: 13px; gap: 6px; flex-shrink: 0; }
+.tiny-check input { width: 18px; height: 18px; }

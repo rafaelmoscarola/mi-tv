@@ -14,6 +14,7 @@ export const CATEGORIES = [
   'Viajes',
   'Ciudades en vivo',
   'Paisajes y relax',
+  'Naturaleza',
   'Cocina',
   'Hogar y obra',
   'Salud',

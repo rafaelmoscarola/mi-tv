@@ -12,7 +12,7 @@ const AUTO_24H = new Set(['Noticias', 'Radios']);
 const DAILY_SEARCH_LIMIT = 40; // tope de búsquedas pagas por día (100 fichas cada una)
 
 // Señales de noticias 24 h cargadas por su @usuario exacto (evita canales equivocados por nombre)
-const OFFICIAL_VERSION = 1;
+const OFFICIAL_VERSION = 2;
 const OFFICIAL_24H = [
   { handle: '@todonoticias', category: 'Noticias' },
   { handle: '@LNmas', category: 'Noticias' },
@@ -75,11 +75,14 @@ async function readCatalog() {
         category: field(f, 'category') || 'Otros',
         priority: Number(field(f, 'priority') || 0),
         always: field(f, 'always') === true,
+        alwaysOff: field(f, 'always') === false,
+        official: field(f, 'official') === true,
         liveVideoId: field(f, 'liveVideoId') || '',
         liveCheckedAt: Number(field(f, 'liveCheckedAt') || 0),
         lastLiveAt: Number(field(f, 'lastLiveAt') || 0),
         addedMs: Date.parse(d.createTime || '') || 0,
         fixCheckedAt: Number(field(f, 'fixCheckedAt') || 0),
+        deepCheckedAt: Number(field(f, 'deepCheckedAt') || 0),
       });
     }
     pageToken = j.nextPageToken || '';
@@ -184,7 +187,8 @@ export default async function handler(req, res) {
     const now = Date.now();
     const catalog = await readCatalog();
     const byId = Object.fromEntries(catalog.map((c) => [c.channelId, c]));
-    const is24 = (c) => c.always || AUTO_24H.has(c.category);
+    // 24 h si está marcado, o si es de Noticias/Radios y no lo desmarcaste a mano
+    const is24 = (c) => c.always || (AUTO_24H.has(c.category) && !c.alwaysOff);
 
     // 1) Videos recientes de cada canal + vivos recordados
     const lists = await pool(catalog, 20, (c) => recentIds(c.channelId));
@@ -256,6 +260,7 @@ export default async function handler(req, res) {
                 logo: ch.snippet.thumbnails?.medium?.url || ch.snippet.thumbnails?.default?.url || '',
                 category: o.category,
                 always: true,
+                official: true,
                 ...(byId[ch.id] ? {} : { priority: 0, addedAt: new Date() }),
               },
               { merge: true }
@@ -266,6 +271,37 @@ export default async function handler(req, res) {
           }
         }
         await budgetRef.set({ officialVersion: OFFICIAL_VERSION, officialLog: auto.official }, { merge: true });
+      }
+
+      // a0) Revisión profunda: últimos 50 videos subidos (1 ficha por canal), cada 15 minutos,
+      //     para señales 24 h que cambian el link de su vivo y suben muchos recortes (como TN)
+      const deep = catalog
+        .filter((c) => is24(c) && !liveChannels.has(c.channelId))
+        .filter((c) => now - (c.deepCheckedAt || 0) > 15 * 60000)
+        .sort((a, b) => (a.deepCheckedAt || 0) - (b.deepCheckedAt || 0))
+        .slice(0, 15);
+      const deepIds = [];
+      await pool(deep, 5, async (c) => {
+        try {
+          const j = await yt(`playlistItems?part=contentDetails&maxResults=50&playlistId=UU${c.channelId.slice(2)}`);
+          for (const it of j.items || []) if (it.contentDetails?.videoId) deepIds.push(it.contentDetails.videoId);
+          touch(c.channelId, { deepCheckedAt: now });
+        } catch {}
+      });
+      auto.deepChecked = deep.length;
+      if (deepIds.length) {
+        const known = new Set(ids);
+        const fresh = [...new Set(deepIds)].filter((v) => !known.has(v));
+        if (fresh.length) {
+          const before = liveChannels.size;
+          for (const v of await videoDetails(fresh)) addVideo(v);
+          auto.deepFound = liveChannels.size - before;
+          // recordar el vivo encontrado
+          for (const c of deep) {
+            const vid = liveVideoOf[c.channelId];
+            if (vid) touch(c.channelId, { liveVideoId: vid, lastLiveAt: now });
+          }
+        }
       }
 
       // a) búsqueda paga por canal (respaldo), con espera entre intentos
@@ -298,7 +334,7 @@ export default async function handler(req, res) {
 
       // b) canal equivocado: si en 24 h nunca se lo vio en vivo, busca el vivo por nombre y lo reemplaza
       const suspects = catalog
-        .filter((c) => is24(c) && !liveChannels.has(c.channelId))
+        .filter((c) => c.official && !liveChannels.has(c.channelId))
         .filter((c) => now - Math.max(c.lastLiveAt || 0, c.addedMs || 0) > 24 * 3600e3)
         .filter((c) => now - (c.fixCheckedAt || 0) > 24 * 3600e3)
         .slice(0, Math.min(left, 1));

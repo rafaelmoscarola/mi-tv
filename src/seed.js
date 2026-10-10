@@ -55,4 +55,29 @@ export const SEED = [
   // Infantil
   { q: 'Pakapaka', category: 'Infantil' },
   { q: 'Encuentro', category: 'Infantil' },
+
+  // ===== Tanda 2: señales 24 horas =====
+  // Radios argentinas con video en YouTube
+  ...['Metro 95.1', 'Pop 101.5 radio', 'Los 40 Argentina', 'Radio Nacional Argentina', 'Radio del Plata AM 1030', 'Radio Ciudad AM 1110', 'CNN Radio Argentina', 'Radio Nihuil Mendoza', 'LV10 Radio de Cuyo', 'LT8 La Ocho Rosario', 'LT3 Rosario', 'Radio 2 Rosario', 'LV2 Radio General Paz Córdoba', 'Radio Suquía'].map(
+    (q) => ({ q, category: 'Radios', always: true })
+  ),
+  // Noticias y canales del interior
+  ...['Canal E Argentina', 'Net TV Argentina'].map((q) => ({ q, category: 'Noticias', always: true })),
+  ...['El Doce Córdoba', 'Canal 10 Córdoba', 'Canal 7 Mendoza', 'Canal 9 Televida Mendoza', 'Canal 13 San Juan', 'Canal 5 Rosario', 'Celta TV Tres Arroyos'].map(
+    (q) => ({ q, category: 'Regional', always: true })
+  ),
+  // Naturaleza: cámaras de fauna y espacio
+  ...['Explore Live Nature Cams', 'Africam', 'Monterey Bay Aquarium', 'International Wolf Center', 'Cornell Lab Bird Cams', 'Directo Natura', 'NASA', 'San Diego Zoo', 'Animal Planet Latinoamérica'].map(
+    (q) => ({ q, category: 'Naturaleza', always: true })
+  ),
+  { q: '@BrownvillesFoodPantryForDeer', category: 'Naturaleza', always: true },
+  // Ciudades y paisajes del mundo
+  ...['EarthCam', 'EarthTV', 'SkylineWebcams'].map((q) => ({ q, category: 'Ciudades en vivo', always: true })),
+  { q: 'Lofi Girl', category: 'Paisajes y relax', always: true },
+  // Entretenimiento 24 horas en español (maratones)
+  ...['Investigation Discovery Latinoamérica', 'Discovery en Español', 'Caso Cerrado'].map((q) => ({ q, category: 'Espectáculos', always: true })),
+  { q: 'Food Network Latinoamérica', category: 'Cocina', always: true },
+  { q: 'HGTV Latinoamérica', category: 'Hogar y obra', always: true },
+  // Deportes: transmiten eventos en vivo (no las 24 horas)
+  ...['Red Bull TV', 'FIFA+', 'Olympics', 'World Surf League', 'Formula 1'].map((q) => ({ q, category: 'Deportes' })),
 ];

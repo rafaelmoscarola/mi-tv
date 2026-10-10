@@ -108,7 +108,7 @@ function useSettled(value, key, ms) {
 }
 
 // UN solo reproductor: se crea una vez y los cambios de canal reutilizan el mismo
-function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, playerRef }) {
+function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, onLearned, onPlayError, playerRef }) {
   const hostRef = useRef(null);
   const itemRef = useRef(item);
   const readyRef = useRef(false);
@@ -208,7 +208,18 @@ function Player({ item, volumeRef, onSoundBlocked, soundStateRef, onFrozen, play
               e.target.loadVideoById(cur.id);
             }
           },
+          onError: (e) => {
+            // 2/5/100/101/150: el video no existe, no está en vivo o no se permite fuera de YouTube
+            onPlayError?.(e.data);
+          },
           onStateChange: (e) => {
+            // Señal 24 h abierta en modo genérico: la tele averigua qué video es y se lo enseña al radar
+            if (e.data === 1 && itemRef.current.kind === 'channel') {
+              try {
+                const vid = e.target.getVideoData?.()?.video_id;
+                if (vid) onLearned?.(itemRef.current.channelId, vid);
+              } catch {}
+            }
             // Auto-vivo PRUDENTE: salta al presente solo si quedó muy atrasado,
             // como mucho una vez por minuto, y si saltar no sirve, deja de intentarlo.
             if (e.data !== 1 || !itemRef.current.live) return;
@@ -613,12 +624,22 @@ export default function Tv() {
             soundStateRef={soundStateRef}
             onSoundBlocked={setSoundBlocked}
             onFrozen={handleFrozen}
+            onLearned={(channelId, videoId) => {
+              updateDoc(doc(db, 'screens', uid), { learnedLive: { channelId, videoId, at: Date.now() } }).catch(() => {});
+            }}
+            onPlayError={() => setTrouble('noplay')}
           />
         )}
         <div className={`tv-toast ${showTitle ? 'is-on' : ''}`}>
           <span className="live-dot" />
           {current.title || 'En vivo'}
         </div>
+        {trouble === 'noplay' && (
+          <div className="tv-sound" role="status">
+            Este canal no está transmitiendo ahora
+            <small>Elegí otro desde tu celular.</small>
+          </div>
+        )}
         {soundBlocked && (
           <div className="tv-sound" role="status">
             Hacé un clic en la pantalla para activar el sonido

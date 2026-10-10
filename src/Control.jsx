@@ -329,6 +329,17 @@ function Home({ user, profile, screen, screenLost }) {
     return () => clearTimeout(t);
   }, [acked, sentAt]);
 
+  // La tele aprendió el vivo de una señal 24 h: se guarda en el catálogo para que el radar la enganche
+  const learned = screen?.learnedLive;
+  useEffect(() => {
+    if (!isAdmin || !learned?.channelId || !learned?.videoId) return;
+    updateDoc(doc(db, 'catalog', learned.channelId), {
+      liveVideoId: learned.videoId,
+      liveCheckedAt: Date.now(),
+      lastLiveAt: Date.now(),
+    }).catch(() => {});
+  }, [isAdmin, learned?.channelId, learned?.videoId]);
+
   const soundNotice = useSteady(!!screen?.soundBlocked, 2500);
   const troubleNotice = useSteady(screen?.trouble || '', 1500);
   const rebooting = (screen?.recentBoots || 0) >= 3 && Date.now() - (screen?.bootAt || 0) < 5 * 60000;
@@ -336,6 +347,8 @@ function Home({ user, profile, screen, screenLost }) {
     ? ''
     : rebooting
     ? 'La tele se reinició varias veces en pocos minutos: su navegador se está quedando sin memoria. Probá cerrar y abrir el navegador de la tele.'
+    : troubleNotice === 'noplay'
+    ? 'La tele no pudo abrir este canal: no está transmitiendo ahora. Probá otro.'
     : troubleNotice === 'frozen'
     ? 'La tele se está trabando con este video. Probá otro canal.'
     : soundNotice
@@ -779,6 +792,14 @@ function Admin({ onPlay, radar }) {
                 ))}
               </select>
             </span>
+            <label className="check tiny-check" title="Transmite las 24 horas">
+              <input
+                type="checkbox"
+                checked={c.always === true || ((c.category === 'Noticias' || c.category === 'Radios') && c.always !== false)}
+                onChange={(e) => updateDoc(doc(db, 'catalog', c.channelId), { always: e.target.checked })}
+              />
+              24 h
+            </label>
             <button
               className="link"
               onClick={() => confirm(`¿Quitar ${c.name} del catálogo?`) && deleteDoc(doc(db, 'catalog', c.channelId))}
@@ -896,7 +917,7 @@ function Seed({ catalog }) {
 function Signals24({ catalog, radar }) {
   const liveIds = new Set((radar?.live || []).map((i) => i.channelId));
   const blockedIds = new Set((radar?.auto?.blocked || []).map((b) => b.channelId));
-  const list = catalog.filter((c) => c.always || c.category === 'Noticias' || c.category === 'Radios');
+  const list = catalog.filter((c) => c.always === true || ((c.category === 'Noticias' || c.category === 'Radios') && c.always !== false));
   if (!list.length) return null;
   const on = list.filter((c) => liveIds.has(c.channelId)).length;
   const ago = (ms) => {
